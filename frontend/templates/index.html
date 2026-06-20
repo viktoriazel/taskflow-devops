@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TaskFlow by Viktoria Zelensky</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-main: #070411;
+            --bg-card: rgba(18, 10, 34, 0.94);
+            --bg-card-soft: rgba(255, 255, 255, 0.045);
+            --border-soft: rgba(202, 166, 255, 0.18);
+            --border-strong: rgba(190, 143, 255, 0.38);
+            --text-main: #f7f0ff;
+            --text-muted: #b9a5df;
+            --text-soft: #8f7aad;
+            --green: #7ddf9f;
+            --yellow: #f5d779;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background:
+                radial-gradient(circle at 12% 18%, rgba(134, 83, 255, 0.22), transparent 28%),
+                radial-gradient(circle at 88% 8%, rgba(191, 97, 255, 0.14), transparent 25%),
+                linear-gradient(135deg, #12072b 0%, #070411 52%, #05030b 100%);
+            color: var(--text-main);
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        .sparkles {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
+        }
+
+        .sparkles span {
+            position: absolute;
+            display: block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.75);
+            box-shadow:
+                0 0 6px rgba(255, 255, 255, 0.55),
+                0 0 12px rgba(210, 150, 255, 0.35);
+            animation: floatSparkle linear infinite, twinkle ease-in-out infinite;
+            opacity: 0.75;
+        }
+
+        .sparkles span::before,
+        .sparkles span::after {
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            background: rgba(255, 255, 255, 0.75);
+            transform: translate(-50%, -50%);
+            border-radius: 999px;
+        }
+
+        .sparkles span::before {
+            width: 1px;
+            height: 12px;
+        }
+
+        .sparkles span::after {
+            width: 12px;
+            height: 1px;
+        }
+
+        @keyframes floatSparkle {
+            0% {
+                transform: translateY(0px) translateX(0px) scale(0.85);
+            }
+
+            25% {
+                transform: translateY(-18px) translateX(8px) scale(1);
+            }
+
+            50% {
+                transform: translateY(-36px) translateX(-6px) scale(0.9);
+            }
+
+            75% {
+                transform: translateY(-18px) translateX(10px) scale(1.02);
+            }
+
+            100% {
+                transform: translateY(0px) translateX(0px) scale(0.85);
+            }
+        }
+
+        @keyframes twinkle {
+            0%, 100% {
+                opacity: 0.25;
+            }
+
+            50% {
+                opacity: 0.95;
+            }
+        }
+
+        .s1  { top: 8%;  left: 8%;   animation-duration: 10s, 3.8s; }
+        .s2  { top: 16%; left: 22%;  animation-duration: 12s, 4.2s; }
+        .s3  { top: 12%; left: 42%;  animation-duration: 11s, 3.5s; }
+        .s4  { top: 9%;  left: 70%;  animation-duration: 13s, 4.6s; }
+        .s5  { top: 18%; left: 88%;  animation-duration: 9s, 3.9s; }
+        .s6  { top: 34%; left: 12%;  animation-duration: 12s, 4.3s; }
+        .s7  { top: 42%; left: 30%;  animation-duration: 10s, 3.7s; }
+        .s8  { top: 38%; left: 57%;  animation-duration: 14s, 4.8s; }
+        .s9  { top: 46%; left: 82%;  animation-duration: 11s, 4.1s; }
+        .s10 { top: 66%; left: 10%;  animation-duration: 13s, 4.5s; }
+        .s11 { top: 74%; left: 26%;  animation-duration: 10s, 3.6s; }
+        .s12 { top: 69%; left: 48%;  animation-duration: 15s, 4.9s; }
+        .s13 { top: 78%; left: 68%;  animation-duration: 11s, 4.0s; }
+        .s14 { top: 72%; left: 88%;  animation-duration: 12s, 4.4s; }
+
+        .page {
+            width: min(1320px, calc(100% - 44px));
+            margin: 0 auto;
+            padding: 36px 0 42px;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero {
+            position: relative;
+            overflow: hidden;
+            background:
+                linear-gradient(135deg, rgba(36, 19, 67, 0.98), rgba(14, 8, 28, 0.98));
+            border: 1px solid var(--border-strong);
+            border-radius: 30px;
+            padding: 46px 38px;
+            margin-bottom: 24px;
+            box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+        }
+
+        .hero::after {
+            content: "";
+            position: absolute;
+            width: 260px;
+            height: 260px;
+            right: -90px;
+            top: -110px;
+            background: rgba(160, 92, 255, 0.22);
+            filter: blur(10px);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 1;
+            max-width: 900px;
+            margin: 0 auto;
+            text-align: center;
+        }
+
+        .top-label {
+            display: inline-block;
+            margin-bottom: 18px;
+            padding: 8px 14px;
+            border-radius: 999px;
+            background: rgba(157, 99, 255, 0.14);
+            border: 1px solid rgba(190, 145, 255, 0.28);
+            color: #d9c2ff;
+            font-size: 13px;
+            letter-spacing: 0.5px;
+        }
+
+        h1 {
+            margin: 0;
+            font-family: "Trebuchet MS", "Segoe UI", Arial, sans-serif;
+            font-size: 66px;
+            line-height: 1;
+            color: #ffffff;
+            letter-spacing: 0.5px;
+            text-shadow:
+                0 0 12px rgba(200, 150, 255, 0.65),
+                0 0 34px rgba(150, 80, 255, 0.45);
+        }
+
+        .author {
+            margin-top: 14px;
+            font-size: 16px;
+            color: var(--text-muted);
+            letter-spacing: 0.8px;
+        }
+
+        .description {
+            margin: 24px auto 0;
+            max-width: 780px;
+            line-height: 1.75;
+            color: #e5d6ff;
+            font-size: 17px;
+        }
+
+        .description p {
+            margin: 0;
+        }
+
+        .description p + p {
+            margin-top: 14px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 14px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: rgba(18, 10, 34, 0.72);
+            border: 1px solid var(--border-soft);
+            border-radius: 20px;
+            padding: 18px 20px;
+        }
+
+        .stat-number {
+            display: block;
+            font-size: 28px;
+            font-weight: bold;
+            color: #ffffff;
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 24px;
+            align-items: start;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-soft);
+            border-radius: 24px;
+            padding: 24px;
+            box-shadow: 0 20px 55px rgba(0, 0, 0, 0.22);
+        }
+
+        .sticky-card {
+            position: sticky;
+            top: 24px;
+        }
+
+        h2 {
+            margin: 0 0 8px;
+            color: #ffffff;
+            font-size: 23px;
+            letter-spacing: -0.3px;
+        }
+
+        .card-text {
+            margin: 0 0 20px;
+            color: var(--text-muted);
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .add-form {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 15px 16px;
+            border-radius: 16px;
+            border: 1px solid rgba(190, 143, 255, 0.46);
+            background: rgba(8, 5, 18, 0.92);
+            color: var(--text-main);
+            font-size: 15px;
+            outline: none;
+        }
+
+        input[type="text"]::placeholder {
+            color: #8f7aad;
+        }
+
+        input[type="text"]:focus {
+            border-color: #c79bff;
+            box-shadow: 0 0 0 3px rgba(167, 105, 255, 0.16);
+        }
+
+        input[type="file"] {
+            max-width: 280px;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        input[type="file"]::file-selector-button {
+            margin-right: 10px;
+            padding: 9px 12px;
+            border: 1px solid rgba(213, 183, 255, 0.22);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.08);
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        button,
+        .view-file-link {
+            padding: 11px 16px;
+            border: none;
+            border-radius: 15px;
+            background: linear-gradient(135deg, #8b5cff, #c45cff);
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+            box-shadow: 0 0 16px rgba(169, 94, 255, 0.28);
+            transition: 0.2s ease;
+            white-space: nowrap;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 13px;
+        }
+
+        button:hover,
+        .view-file-link:hover {
+            transform: translateY(-1px);
+            background: linear-gradient(135deg, #9d70ff, #d579ff);
+            box-shadow: 0 0 22px rgba(205, 124, 255, 0.45);
+        }
+
+        .secondary-button {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(213, 183, 255, 0.22);
+            box-shadow: none;
+        }
+
+        .secondary-button:hover {
+            background: rgba(255, 255, 255, 0.13);
+            box-shadow: 0 0 18px rgba(178, 122, 255, 0.2);
+        }
+
+        .danger-button {
+            background: rgba(255, 80, 120, 0.12);
+            border: 1px solid rgba(255, 120, 155, 0.35);
+            color: #ffd6df;
+            box-shadow: none;
+        }
+
+        .danger-button:hover {
+            background: rgba(255, 80, 120, 0.22);
+            box-shadow: 0 0 18px rgba(255, 100, 145, 0.22);
+        }
+
+        .tasks-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            align-items: flex-start;
+            margin-bottom: 18px;
+        }
+
+        .tasks-count {
+            padding: 7px 11px;
+            border-radius: 999px;
+            background: rgba(137, 88, 255, 0.14);
+            color: #ccb3f5;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+
+        .todo-list {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .todo-item {
+            display: grid;
+            grid-template-columns: 42px 1fr;
+            gap: 14px;
+            padding: 18px;
+            border-radius: 20px;
+            background: var(--bg-card-soft);
+            border: 1px solid rgba(211, 181, 255, 0.13);
+            transition: 0.2s ease;
+        }
+
+        .todo-item:hover {
+            border-color: rgba(211, 181, 255, 0.25);
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .todo-item.completed {
+            opacity: 0.72;
+        }
+
+        .todo-status {
+            width: 34px;
+            height: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 12px;
+            background: rgba(137, 88, 255, 0.16);
+            font-size: 17px;
+        }
+
+        .todo-item.completed .todo-status {
+            background: rgba(125, 223, 159, 0.13);
+        }
+
+        .todo-content {
+            min-width: 0;
+        }
+
+        .todo-title {
+            display: block;
+            margin-bottom: 8px;
+            color: var(--text-main);
+            font-size: 16px;
+            line-height: 1.45;
+            word-break: break-word;
+            font-weight: bold;
+        }
+
+        .done {
+            color: #a997c8;
+            text-decoration: line-through;
+        }
+
+        .status-label {
+            display: inline-block;
+            margin-bottom: 12px;
+            padding: 5px 10px;
+            border-radius: 999px;
+            background: rgba(245, 215, 121, 0.1);
+            color: var(--yellow);
+            font-size: 12px;
+        }
+
+        .status-label.completed-label {
+            background: rgba(125, 223, 159, 0.11);
+            color: var(--green);
+        }
+
+        .files-box {
+            margin: 4px 0 12px;
+            padding: 12px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.045);
+            border: 1px solid rgba(211, 181, 255, 0.12);
+        }
+
+        .files-title {
+            display: block;
+            margin-bottom: 10px;
+            color: var(--text-muted);
+            font-size: 13px;
+            font-weight: bold;
+        }
+
+        .file-row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 8px 0;
+            border-top: 1px solid rgba(211, 181, 255, 0.1);
+        }
+
+        .file-row:first-of-type {
+            border-top: none;
+            padding-top: 0;
+        }
+
+        .file-name {
+            color: var(--text-muted);
+            font-size: 13px;
+            word-break: break-word;
+        }
+
+        .todo-actions {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .upload-form {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .empty {
+            margin: 0;
+            padding: 26px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px dashed rgba(207, 175, 255, 0.26);
+            color: var(--text-muted);
+            line-height: 1.6;
+        }
+
+        .footer-note {
+            margin-top: 24px;
+            text-align: center;
+            color: var(--text-soft);
+            font-size: 13px;
+        }
+
+        @media (max-width: 950px) {
+            .page {
+                width: min(100% - 28px, 1320px);
+                padding-top: 24px;
+            }
+
+            .hero {
+                padding: 34px 24px;
+            }
+
+            h1 {
+                font-size: 42px;
+            }
+
+            .stats {
+                grid-template-columns: 1fr;
+            }
+
+            .layout {
+                grid-template-columns: 1fr;
+            }
+
+            .sticky-card {
+                position: static;
+            }
+
+            .tasks-header {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="sparkles" aria-hidden="true">
+        <span class="s1"></span>
+        <span class="s2"></span>
+        <span class="s3"></span>
+        <span class="s4"></span>
+        <span class="s5"></span>
+        <span class="s6"></span>
+        <span class="s7"></span>
+        <span class="s8"></span>
+        <span class="s9"></span>
+        <span class="s10"></span>
+        <span class="s11"></span>
+        <span class="s12"></span>
+        <span class="s13"></span>
+        <span class="s14"></span>
+    </div>
+
+    <main class="page">
+        <section class="hero">
+            <div class="hero-content">
+                <span class="top-label">Personal productivity app</span>
+
+                <h1>TaskFlow</h1>
+                <div class="author">by Viktoria Zelensky</div>
+
+                <div class="description">
+                    <p>
+                        Welcome to TaskFlow — a clean and elegant to-do list application.
+                    </p>
+
+                    <p>
+                        Organize your tasks, track your progress, and keep important documents
+                        connected to the right task in one place.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <section class="stats">
+            <div class="stat-card">
+                <span class="stat-number">{{ todos|length }}</span>
+                <span class="stat-label">Total tasks</span>
+            </div>
+
+            <div class="stat-card">
+                <span class="stat-number">{{ todos|selectattr("done")|list|length }}</span>
+                <span class="stat-label">Completed tasks</span>
+            </div>
+
+            <div class="stat-card">
+                <span class="stat-number">{{ todos|rejectattr("done")|list|length }}</span>
+                <span class="stat-label">Active tasks</span>
+            </div>
+        </section>
+
+        <section class="layout">
+            <div class="card sticky-card">
+                <h2>Add New Task</h2>
+                <p class="card-text">
+                    Write a new task and add it to your personal workflow.
+                </p>
+
+                <form action="/add" method="post" class="add-form">
+                    <input
+                        type="text"
+                        name="title"
+                        placeholder="Example: Prepare project presentation"
+                        required
+                    >
+                    <button type="submit">+ Add Task</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <div class="tasks-header">
+                    <div>
+                        <h2>Your Tasks</h2>
+                        <p class="card-text">
+                            Mark tasks as completed, attach documents, view uploaded files, and delete completed tasks when needed.
+                        </p>
+                    </div>
+
+                    <span class="tasks-count">
+                        {{ todos|length }} task(s)
+                    </span>
+                </div>
+
+                {% if todos %}
+                    <div class="todo-list">
+                        {% for todo in todos %}
+                            <div class="todo-item {% if todo.done %}completed{% endif %}">
+                                <span class="todo-status">
+                                    {% if todo.done %}
+                                        ✅
+                                    {% else %}
+                                        ⬜
+                                    {% endif %}
+                                </span>
+
+                                <div class="todo-content">
+                                    <span class="todo-title {% if todo.done %}done{% endif %}">
+                                        {{ todo.title }}
+                                    </span>
+
+                                    {% if todo.done %}
+                                        <span class="status-label completed-label">Completed</span>
+                                    {% else %}
+                                        <span class="status-label">Not completed yet</span>
+                                    {% endif %}
+
+                                    {% if todo.file_keys %}
+                                        <div class="files-box">
+                                            <span class="files-title">
+                                                📎 Attached files: {{ todo.file_keys|length }}
+                                            </span>
+
+                                            {% for file_key in todo.file_keys %}
+                                                <div class="file-row">
+                                                    <span class="file-name">
+                                                        {{ file_key }}
+                                                    </span>
+
+                                                    <a
+                                                        href="/files/{{ file_key }}"
+                                                        target="_blank"
+                                                        class="view-file-link"
+                                                    >
+                                                        View File
+                                                    </a>
+                                                </div>
+                                            {% endfor %}
+                                        </div>
+                                    {% endif %}
+
+                                    <div class="todo-actions">
+                                        {% if not todo.done %}
+                                            <form action="/done/{{ todo.id }}" method="post">
+                                                <button type="submit">Mark Complete</button>
+                                            </form>
+                                        {% endif %}
+
+                                        <form
+                                            action="/upload/{{ todo.id }}"
+                                            method="post"
+                                            enctype="multipart/form-data"
+                                            class="upload-form"
+                                        >
+                                            <input type="file" name="file" required>
+                                            <button type="submit" class="secondary-button">
+                                                Upload File
+                                            </button>
+                                        </form>
+
+                                        {% if todo.done %}
+                                            <form action="/delete/{{ todo.id }}" method="post">
+                                                <button type="submit" class="danger-button">
+                                                    Delete Task
+                                                </button>
+                                            </form>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <p class="empty">
+                        No tasks yet. Add your first task and start organizing your day.
+                    </p>
+                {% endif %}
+            </div>
+        </section>
+
+        <p class="footer-note">
+            Built with Flask, Python and a little bit of focus.
+        </p>
+    </main>
+</body>
+</html>
