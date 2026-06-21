@@ -31,18 +31,37 @@ def get_connection():
 
 def init_database():
     """
-    Create the todos table if it does not exist.
+    Create the users and todos tables if they do not exist,
+    and add user_id to todos if the column is missing.
     """
     with get_connection() as connection:
         with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+                )
+                """
+            )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS todos (
                     id SERIAL PRIMARY KEY,
                     title TEXT NOT NULL,
                     done BOOLEAN NOT NULL DEFAULT FALSE,
-                    file_keys TEXT NOT NULL DEFAULT '[]'
+                    file_keys TEXT NOT NULL DEFAULT '[]',
+                    user_id INTEGER REFERENCES users(id)
                 )
+                """
+            )
+            # Safe to run on every startup — no-op if column already exists.
+            cursor.execute(
+                """
+                ALTER TABLE todos
+                    ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id)
                 """
             )
         connection.commit()
@@ -57,10 +76,51 @@ def row_to_todo(row):
         "title": row["title"],
         "done": bool(row["done"]),
         "file_keys": json.loads(row["file_keys"]),
+        "user_id": row["user_id"],
     }
 
 
-def create_todo_record(title):
+def create_user(username, password_hash):
+    """
+    Create a new user record and return it as a dictionary.
+    """
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash)
+                VALUES (%s, %s)
+                RETURNING id, username, created_at
+                """,
+                (username, password_hash),
+            )
+
+            row = cursor.fetchone()
+
+        connection.commit()
+
+    return dict(row)
+
+
+def find_user_by_username(username):
+    """
+    Find a user by username. Returns a dict or None.
+    """
+    with get_connection() as connection:
+        with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            cursor.execute(
+                "SELECT id, username, password_hash FROM users WHERE username = %s",
+                (username,),
+            )
+            row = cursor.fetchone()
+
+    if row is None:
+        return None
+
+    return dict(row)
+
+
+def create_todo_record(title, user_id):
     """
     Create a new todo record in PostgreSQL.
     """
@@ -68,11 +128,11 @@ def create_todo_record(title):
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(
                 """
-                INSERT INTO todos (title, done, file_keys)
-                VALUES (%s, %s, %s)
+                INSERT INTO todos (title, done, file_keys, user_id)
+                VALUES (%s, %s, %s, %s)
                 RETURNING *
                 """,
-                (title, False, "[]"),
+                (title, False, "[]", user_id),
             )
 
             row = cursor.fetchone()
@@ -82,13 +142,16 @@ def create_todo_record(title):
     return row_to_todo(row)
 
 
-def get_all_todos():
+def get_all_todos(user_id):
     """
-    Return all todo records.
+    Return all todo records belonging to the given user.
     """
     with get_connection() as connection:
         with connection.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("SELECT * FROM todos ORDER BY id")
+            cursor.execute(
+                "SELECT * FROM todos WHERE user_id = %s ORDER BY id",
+                (user_id,),
+            )
             rows = cursor.fetchall()
 
     return [row_to_todo(row) for row in rows]
