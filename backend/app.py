@@ -49,6 +49,18 @@ s3_client = boto3.client(
 def notify_worker(event, title):
     """
     Send an event notification to the Worker service.
+
+    Posts a JSON body with the event name and todo title to the Worker's
+    /notify endpoint. If the Worker is unavailable, the error is silently
+    ignored so the main request still succeeds.
+
+    Args:
+        event (str): The event name, e.g. "todo_created", "todo_completed",
+            or "file_uploaded".
+        title (str): The title of the todo that triggered the event.
+
+    Side Effects:
+        - Sends a POST request to the Worker service at WORKER_URL/notify.
     """
     try:
         requests.post(
@@ -66,7 +78,13 @@ def notify_worker(event, title):
 def get_request_user_id():
     """
     Read the X-User-Id request header and return it as an int.
-    Returns None if the header is missing or not a valid integer.
+
+    The Frontend sets this header on every authenticated request using
+    the user ID stored in the browser session.
+
+    Returns:
+        int: The user ID from the header.
+        None: If the header is missing or not a valid integer.
     """
     raw = request.headers.get("X-User-Id")
     if raw is None:
@@ -80,7 +98,13 @@ def get_request_user_id():
 @app.route("/health", methods=["GET"])
 def health_check():
     """
-    Return backend health status.
+    Return the health status of the backend service.
+
+    Used by load balancers and monitoring tools to check that the
+    service is running and responding to requests.
+
+    Returns:
+        JSON {"service": "backend", "status": "ok"}, HTTP 200.
     """
     return jsonify({
         "service": "backend",
@@ -92,6 +116,19 @@ def health_check():
 def register():
     """
     Register a new user account.
+
+    Reads a JSON body with "username" and "password" fields. Validates
+    that the username is not already taken and the password is at least
+    8 characters, then stores a bcrypt hash of the password in the
+    PostgreSQL users table.
+
+    Returns:
+        JSON {"id", "username"}, HTTP 201 on success.
+        JSON {"error": ...}, HTTP 400 if validation fails.
+        JSON {"error": "Username already taken"}, HTTP 409 if duplicate.
+
+    Side Effects:
+        - Writes a new row to the PostgreSQL users table.
     """
     data = request.get_json()
 
@@ -131,6 +168,15 @@ def register():
 def login():
     """
     Authenticate a user and return their account info.
+
+    Reads a JSON body with "username" and "password" fields. Looks up the
+    user in PostgreSQL and verifies the bcrypt password hash. No session is
+    created here — the Frontend stores the returned user ID in its own
+    session and sends it back as an X-User-Id header on future requests.
+
+    Returns:
+        JSON {"id", "username"}, HTTP 200 on success.
+        JSON {"error": "Invalid username or password"}, HTTP 401 on failure.
     """
     data = request.get_json()
 
@@ -163,7 +209,19 @@ def login():
 @app.route("/todos", methods=["POST"])
 def create_todo():
     """
-    Create a new todo item.
+    Create a new todo item for the current user.
+
+    Reads the user ID from the X-User-Id header and the todo title from
+    the JSON body. Saves the new todo to PostgreSQL and notifies the Worker
+    service so an SNS notification can be sent.
+
+    Returns:
+        JSON todo dict, HTTP 201 on success.
+        JSON {"error": ...}, HTTP 401 if not authenticated or 400 if title is missing.
+
+    Side Effects:
+        - Inserts a new row into the PostgreSQL todos table.
+        - Sends a POST request to the Worker service (fire-and-forget).
     """
     user_id = get_request_user_id()
 
@@ -197,6 +255,13 @@ def create_todo():
 def get_todos():
     """
     Return all todo items belonging to the requesting user.
+
+    Reads the user ID from the X-User-Id header and fetches only that
+    user's todos from PostgreSQL, ordered by insertion order.
+
+    Returns:
+        JSON array of todo dicts, HTTP 200.
+        JSON {"error": ...}, HTTP 401 if not authenticated.
     """
     user_id = get_request_user_id()
 
@@ -213,6 +278,20 @@ def get_todos():
 def mark_todo_done(todo_id):
     """
     Mark a todo item as completed.
+
+    Checks that the todo exists and belongs to the current user before
+    setting done=TRUE in PostgreSQL. Also notifies the Worker service.
+
+    Args:
+        todo_id (int): The ID of the todo to mark as done (from URL path).
+
+    Returns:
+        JSON updated todo dict, HTTP 200 on success.
+        JSON {"error": ...}, HTTP 401/403/404 on auth or lookup failure.
+
+    Side Effects:
+        - Updates the PostgreSQL todos row (done = TRUE).
+        - Sends a POST request to the Worker service (fire-and-forget).
     """
     user_id = get_request_user_id()
 
@@ -249,6 +328,20 @@ def mark_todo_done(todo_id):
 def delete_todo(todo_id):
     """
     Delete a completed todo item.
+
+    Checks ownership before deleting. Only todos that are already marked
+    as done can be deleted — attempting to delete an incomplete todo
+    returns a 400 error.
+
+    Args:
+        todo_id (int): The ID of the todo to delete (from URL path).
+
+    Returns:
+        JSON {"message", "todo"}, HTTP 200 on success.
+        JSON {"error": ...}, HTTP 400 if not completed, 401/403/404 otherwise.
+
+    Side Effects:
+        - Deletes the row from the PostgreSQL todos table.
     """
     user_id = get_request_user_id()
 
@@ -291,6 +384,22 @@ def delete_todo(todo_id):
 def upload_file(todo_id):
     """
     Upload a file to AWS S3 for a specific todo item.
+
+    Sanitises the filename, uploads the file to S3 under the key
+    "uploads/todo-{todo_id}/{filename}", stores that key in the PostgreSQL
+    todos.file_keys column, and notifies the Worker service.
+
+    Args:
+        todo_id (int): The ID of the todo to attach the file to (from URL).
+
+    Returns:
+        JSON {"message", "todo"}, HTTP 200 on success.
+        JSON {"error": ...}, HTTP 400/401/403/404 on failure.
+
+    Side Effects:
+        - Uploads the file to the S3 bucket (S3_BUCKET_NAME).
+        - Updates the PostgreSQL todos.file_keys column.
+        - Sends a POST request to the Worker service (fire-and-forget).
     """
     user_id = get_request_user_id()
 
@@ -348,7 +457,20 @@ def upload_file(todo_id):
 @app.route("/files/<path:file_key>", methods=["GET"])
 def view_uploaded_file(file_key):
     """
-    Generate a presigned S3 URL and redirect the browser.
+    Generate a presigned S3 URL and redirect the browser to the file.
+
+    Parses the todo ID from the S3 key path, verifies that the todo
+    belongs to the current user, confirms the key is attached to that todo,
+    then generates a short-lived (1-hour) presigned URL that gives the
+    browser direct access to the S3 object.
+
+    Args:
+        file_key (str): The S3 object key from the URL path,
+            e.g. "uploads/todo-5/report.pdf".
+
+    Returns:
+        HTTP 302 redirect to the presigned S3 URL on success.
+        JSON {"error": ...}, HTTP 400/401/403/404 on failure.
     """
     user_id = get_request_user_id()
 
