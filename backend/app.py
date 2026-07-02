@@ -33,12 +33,15 @@ from db import (
 load_dotenv()
 
 app = Flask(__name__)
+# Limit uploads to 30 MB to avoid very large files.
+app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 
 init_database()
 
 WORKER_URL = os.getenv("WORKER_URL", "http://127.0.0.1:6000")
 AWS_REGION = os.getenv("AWS_REGION")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "pdf", "txt"}
 
 s3_client = boto3.client(
     "s3",
@@ -51,8 +54,8 @@ def notify_worker(event, title):
     Send an event notification to the Worker service.
 
     Posts a JSON body with the event name and todo title to the Worker's
-    /notify endpoint. If the Worker is unavailable, the error is silently
-    ignored so the main request still succeeds.
+    /notify endpoint. If the Worker is unavailable, the error is logged as
+    a warning so the main request still succeeds.
 
     Args:
         event (str): The event name, e.g. "todo_created", "todo_completed",
@@ -71,8 +74,18 @@ def notify_worker(event, title):
             },
             timeout=5,
         )
-    except requests.RequestException:
-        pass
+    except requests.RequestException as e:
+        app.logger.warning(
+            "Worker notification failed for event '%s' on task '%s': %s",
+            event,
+            title,
+            e,
+        )
+
+
+def allowed_file(filename):
+    """Return True if filename has an allowed extension."""
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 def get_request_user_id():
@@ -93,6 +106,14 @@ def get_request_user_id():
         return int(raw)
     except ValueError:
         return None
+
+
+@app.errorhandler(413)
+def file_too_large(e):
+    """Return a clear JSON error when an uploaded file exceeds MAX_CONTENT_LENGTH."""
+    return jsonify({
+        "error": "File is too large. Maximum allowed size is 30 MB.",
+    }), 413
 
 
 @app.route("/health", methods=["GET"])
@@ -158,6 +179,8 @@ def register():
     password_hash = generate_password_hash(password)
     user = create_user(username, password_hash)
 
+    app.logger.info("User registered: user_id=%s", user["id"])
+
     return jsonify({
         "id": user["id"],
         "username": user["username"],
@@ -199,6 +222,8 @@ def login():
         return jsonify({
             "error": "Invalid username or password",
         }), 401
+
+    app.logger.info("User logged in: user_id=%s", user["id"])
 
     return jsonify({
         "id": user["id"],
@@ -245,6 +270,8 @@ def create_todo():
         }), 400
 
     todo = create_todo_record(title, user_id)
+
+    app.logger.info("Todo created: todo_id=%s, user_id=%s", todo["id"], user_id)
 
     notify_worker("todo_created", title)
 
@@ -318,6 +345,8 @@ def mark_todo_done(todo_id):
         return jsonify({
             "error": "Todo not found",
         }), 404
+
+    app.logger.info("Todo marked as done: todo_id=%s, user_id=%s", todo_id, user_id)
 
     notify_worker("todo_completed", updated["title"])
 
@@ -433,18 +462,37 @@ def upload_file(todo_id):
         }), 400
 
     filename = secure_filename(uploaded_file.filename)
+
+    if not allowed_file(filename):
+        return jsonify({
+            "error": "File type is not allowed",
+        }), 400
+
     file_key = f"uploads/todo-{todo_id}/{filename}"
 
-    s3_client.upload_fileobj(
-        uploaded_file,
-        S3_BUCKET_NAME,
-        file_key,
-        ExtraArgs={
-            "ContentType": uploaded_file.content_type,
-        },
-    )
+    try:
+        s3_client.upload_fileobj(
+            uploaded_file,
+            S3_BUCKET_NAME,
+            file_key,
+            ExtraArgs={
+                "ContentType": uploaded_file.content_type,
+            },
+        )
+    except Exception as e:
+        app.logger.error(
+            "S3 upload failed for todo %s, file '%s': %s",
+            todo_id,
+            filename,
+            e,
+        )
+        return jsonify({
+            "error": "Failed to upload file to S3",
+        }), 503
 
     updated_todo = add_file_to_todo(todo_id, file_key)
+
+    app.logger.info("File uploaded: todo_id=%s, user_id=%s, filename=%s", todo_id, user_id, filename)
 
     notify_worker("file_uploaded", updated_todo["title"])
 

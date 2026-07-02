@@ -288,6 +288,13 @@ def view_uploaded_file(file_key):
         timeout=10,
     )
 
+    if response.status_code != 200:
+        try:
+            error_message = response.json().get("error", "File could not be loaded.")
+        except Exception:
+            error_message = "File could not be loaded."
+        return error_message, response.status_code, {"Content-Type": "text/plain"}
+
     return (
         response.content,
         response.status_code,

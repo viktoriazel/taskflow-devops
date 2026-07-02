@@ -104,19 +104,40 @@ def notify():
 
     message = build_notification_message(event, title)
 
-    sns_client.publish(
-        TopicArn=SNS_TOPIC_ARN,
-        Subject="TaskFlow notification",
-        Message=message,
-    )
+    try:
+        result = sns_client.publish(
+            TopicArn=SNS_TOPIC_ARN,
+            Subject="TaskFlow notification",
+            Message=message,
+        )
+    except Exception as e:
+        app.logger.error(
+            "SNS publish failed for event '%s' on task '%s': %s",
+            event,
+            title,
+            e,
+        )
+        return jsonify({
+            "error": "Failed to publish notification",
+        }), 500
 
     return jsonify({
         "message": "Notification published to SNS",
         "event": event,
         "title": title,
+        "sns_message_id": result["MessageId"],
     }), 200
 
 
 if __name__ == "__main__":
+    if not AWS_REGION:
+        raise ValueError(
+            "AWS_REGION is required but not set. "
+            "Add it to worker/.env before starting the Worker."
+        )
+    if not SNS_TOPIC_ARN:
+        raise ValueError(
+            "SNS_TOPIC_ARN is required but not set. "
+            "Add it to worker/.env before starting the Worker."
+        )
     app.run(host="0.0.0.0", port=6000, debug=False)
-    

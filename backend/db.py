@@ -7,6 +7,7 @@ and deleting todo data.
 """
 
 import json
+import logging
 import os
 
 import psycopg2
@@ -27,13 +28,18 @@ def get_connection():
         psycopg2 connection object. Use as a context manager or close it
         manually when done.
     """
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        database=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD"),
-        port=os.getenv("DB_PORT", "5432"),
-    )
+    try:
+        return psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            database=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            port=os.getenv("DB_PORT", "5432"),
+            connect_timeout=5,
+        )
+    except psycopg2.OperationalError as e:
+        logging.error("Database connection failed: %s", e)
+        raise
 
 
 def init_database():
