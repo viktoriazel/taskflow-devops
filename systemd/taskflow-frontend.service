@@ -1,0 +1,23 @@
+[Unit]
+Description=TaskFlow Frontend Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/taskflow/frontend
+EnvironmentFile=/opt/taskflow/frontend/.env
+ExecStart=/opt/taskflow/frontend/venv/bin/gunicorn \
+    --workers 2 \
+    --bind 127.0.0.1:8000 \
+    --timeout 60 \
+    app:app
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

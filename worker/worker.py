@@ -18,6 +18,17 @@ app = Flask(__name__)
 AWS_REGION = os.getenv("AWS_REGION")
 SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN")
 
+if not AWS_REGION:
+    raise ValueError(
+        "AWS_REGION is required but not set. "
+        "Add it to worker/.env before starting the Worker."
+    )
+if not SNS_TOPIC_ARN:
+    raise ValueError(
+        "SNS_TOPIC_ARN is required but not set. "
+        "Add it to worker/.env before starting the Worker."
+    )
+
 sns_client = boto3.client(
     "sns",
     region_name=AWS_REGION,
@@ -130,14 +141,4 @@ def notify():
 
 
 if __name__ == "__main__":
-    if not AWS_REGION:
-        raise ValueError(
-            "AWS_REGION is required but not set. "
-            "Add it to worker/.env before starting the Worker."
-        )
-    if not SNS_TOPIC_ARN:
-        raise ValueError(
-            "SNS_TOPIC_ARN is required but not set. "
-            "Add it to worker/.env before starting the Worker."
-        )
     app.run(host="0.0.0.0", port=6000, debug=False)
