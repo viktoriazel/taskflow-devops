@@ -59,6 +59,13 @@ variable "db_password" {
   description = "Master password for the RDS PostgreSQL instance"
   type        = string
   sensitive   = true
+  ephemeral   = true
+}
+
+variable "db_password_wo_version" {
+  description = "Version counter for db_password (write-only). Increment this value whenever the RDS master password needs to be rotated - changing db_password alone does not trigger an update."
+  type        = number
+  default     = 1
 }
 
 # -----------------------------------------------------------------------------

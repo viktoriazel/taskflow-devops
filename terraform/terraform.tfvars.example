@@ -17,6 +17,7 @@ key_pair_name      = "REPLACE_WITH_EXISTING_KEY_PAIR_NAME"
 db_name            = "todo_db"
 db_username        = "REPLACE_WITH_DB_USERNAME"
 db_password        = "REPLACE_WITH_DB_PASSWORD"
+db_password_wo_version = 1
 notification_email = "your-email@example.com"
 allowed_ssh_cidr   = "YOUR_PUBLIC_IP/32"
 
