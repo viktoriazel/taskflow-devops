@@ -33,6 +33,7 @@ resource "aws_instance" "backend" {
   subnet_id              = aws_subnet.private_app.id
   vpc_security_group_ids = [aws_security_group.backend.id]
   key_name               = var.key_pair_name
+  iam_instance_profile   = aws_iam_instance_profile.backend.name
 
   root_block_device {
     volume_size = 8
@@ -55,6 +56,7 @@ resource "aws_instance" "worker" {
   subnet_id              = aws_subnet.private_app.id
   vpc_security_group_ids = [aws_security_group.worker.id]
   key_name               = var.key_pair_name
+  iam_instance_profile   = aws_iam_instance_profile.worker.name
 
   root_block_device {
     volume_size = 8
