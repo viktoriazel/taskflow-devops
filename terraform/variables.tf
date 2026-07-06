@@ -16,12 +16,22 @@ variable "project_name" {
   description = "Short identifier used to prefix resource names (e.g. 'taskflow')"
   type        = string
   default     = "taskflow"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.project_name))
+    error_message = "project_name must be lowercase letters, digits, and hyphens only, and must not start or end with a hyphen (it is used to build the S3 bucket name)."
+  }
 }
 
 variable "environment" {
   description = "Deployment environment label, used in resource tags (e.g. 'part-b')"
   type        = string
   default     = "part-b"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.environment))
+    error_message = "environment must be lowercase letters, digits, and hyphens only, and must not start or end with a hyphen (it is used to build the S3 bucket name)."
+  }
 }
 
 # -----------------------------------------------------------------------------

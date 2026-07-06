@@ -79,13 +79,13 @@ output "rds_endpoint" {
   value       = aws_db_instance.main.endpoint
 }
 
-# Populated in Steps 6-7 (s3.tf, sns.tf)
+output "s3_bucket_name" {
+  description = "Name of the S3 bucket for file uploads"
+  value       = aws_s3_bucket.uploads.bucket
+}
 
-# output "s3_bucket_name" {
-#   description = "Name of the S3 bucket for file uploads"
-#   value       = aws_s3_bucket.main.bucket
-# }
-#
+# Populated in Step 7 (sns.tf)
+
 # output "sns_topic_arn" {
 #   description = "ARN of the SNS topic for notifications"
 #   value       = aws_sns_topic.main.arn
