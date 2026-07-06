@@ -52,23 +52,23 @@ output "sg_rds_id" {
 }
 
 # -----------------------------------------------------------------------------
-# Compute - populated in Step 4 (compute.tf)
+# Compute
 # -----------------------------------------------------------------------------
 
-# output "frontend_public_ip" {
-#   description = "Public IP of the Frontend EC2 instance"
-#   value       = aws_instance.frontend.public_ip
-# }
-#
-# output "backend_private_ip" {
-#   description = "Private IP of the Backend EC2 instance"
-#   value       = aws_instance.backend.private_ip
-# }
-#
-# output "worker_private_ip" {
-#   description = "Private IP of the Worker EC2 instance"
-#   value       = aws_instance.worker.private_ip
-# }
+output "frontend_public_ip" {
+  description = "Public IP of the Frontend/Nginx EC2 instance"
+  value       = aws_instance.frontend.public_ip
+}
+
+output "backend_private_ip" {
+  description = "Private IP of the Backend EC2 instance"
+  value       = aws_instance.backend.private_ip
+}
+
+output "worker_private_ip" {
+  description = "Private IP of the Worker EC2 instance"
+  value       = aws_instance.worker.private_ip
+}
 
 # -----------------------------------------------------------------------------
 # Data layer - populated in Steps 5-7 (rds.tf, s3.tf, sns.tf)
