@@ -85,6 +85,13 @@ variable "db_password_wo_version" {
 variable "notification_email" {
   description = "Email address that will receive SNS notifications for task events"
   type        = string
+
+  validation {
+    # Lightweight sanity check only - not a full RFC5322 validator. Just
+    # catches obvious mistakes (empty value, spaces, missing @ or domain).
+    condition     = can(regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$", var.notification_email))
+    error_message = "notification_email must look like a valid email address (e.g. 'you@example.com')."
+  }
 }
 
 # -----------------------------------------------------------------------------
