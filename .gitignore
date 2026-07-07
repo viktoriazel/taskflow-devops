@@ -29,20 +29,15 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+
+# Local project notes - not submitted
 docs/
 
-# Terraform - local state, cache, plans, and sensitive variable files
+# Terraform local runtime/state/secrets
 terraform/.terraform/
 terraform/*.tfstate
-terraform/*.tfstate.*
+terraform/*.tfstate.backup
 terraform/*.tfvars
-terraform/*.tfplan
-terraform/*.plan
+terraform/*.tfvars.json
 terraform/crash.log
-terraform/override.tf
-terraform/override.tf.json
-
-# Keep safe Terraform example files committed
-!terraform/*.tfvars.example
-# Note: terraform/.terraform.lock.hcl is intentionally NOT ignored (must be committed)
-
+terraform/*.tfplan
