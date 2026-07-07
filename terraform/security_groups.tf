@@ -16,6 +16,7 @@ resource "aws_security_group" "frontend" {
     Name        = "${var.project_name}-${var.environment}-sg-frontend"
     Project     = var.project_name
     Environment = var.environment
+    Role        = "frontend"
   }
 }
 
@@ -28,6 +29,7 @@ resource "aws_security_group" "backend" {
     Name        = "${var.project_name}-${var.environment}-sg-backend"
     Project     = var.project_name
     Environment = var.environment
+    Role        = "backend"
   }
 }
 
@@ -40,6 +42,7 @@ resource "aws_security_group" "worker" {
     Name        = "${var.project_name}-${var.environment}-sg-worker"
     Project     = var.project_name
     Environment = var.environment
+    Role        = "worker"
   }
 }
 
@@ -52,6 +55,7 @@ resource "aws_security_group" "rds" {
     Name        = "${var.project_name}-${var.environment}-sg-rds"
     Project     = var.project_name
     Environment = var.environment
+    Role        = "database"
   }
 }
 
@@ -163,7 +167,9 @@ resource "aws_security_group_rule" "worker_egress" {
 # RDS Security Group Rules
 # -----------------------------------------------------------------------------
 
-# RDS has no egress rule — it is a managed service with no outbound traffic needs
+# No RDS egress rule is managed by Terraform: this application does not rely
+# on outbound traffic from RDS. AWS's default allow-all-egress rule for the
+# security group may still be present, but it is unused and harmless here.
 resource "aws_security_group_rule" "rds_db_in" {
   type                     = "ingress"
   security_group_id        = aws_security_group.rds.id
