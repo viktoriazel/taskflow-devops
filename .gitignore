@@ -29,6 +29,7 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+
 # Local project notes - not submitted
 docs/
 

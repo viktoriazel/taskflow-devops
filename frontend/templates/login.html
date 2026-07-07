@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TaskFlow — Log in</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-main: #070411;
+            --bg-card: rgba(18, 10, 34, 0.94);
+            --border-soft: rgba(202, 166, 255, 0.18);
+            --border-strong: rgba(190, 143, 255, 0.38);
+            --text-main: #f7f0ff;
+            --text-muted: #b9a5df;
+            --text-soft: #8f7aad;
+        }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background:
+                radial-gradient(circle at 12% 18%, rgba(134, 83, 255, 0.22), transparent 28%),
+                radial-gradient(circle at 88% 8%, rgba(191, 97, 255, 0.14), transparent 25%),
+                linear-gradient(135deg, #12072b 0%, #070411 52%, #05030b 100%);
+            color: var(--text-main);
+            min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        .sparkles {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            overflow: hidden;
+            z-index: 0;
+        }
+
+        .sparkles span {
+            position: absolute;
+            display: block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.75);
+            box-shadow:
+                0 0 6px rgba(255, 255, 255, 0.55),
+                0 0 12px rgba(210, 150, 255, 0.35);
+            animation: floatSparkle linear infinite, twinkle ease-in-out infinite;
+            opacity: 0.75;
+        }
+
+        .sparkles span::before,
+        .sparkles span::after {
+            content: "";
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            background: rgba(255, 255, 255, 0.75);
+            transform: translate(-50%, -50%);
+            border-radius: 999px;
+        }
+
+        .sparkles span::before {
+            width: 1px;
+            height: 12px;
+        }
+
+        .sparkles span::after {
+            width: 12px;
+            height: 1px;
+        }
+
+        @keyframes floatSparkle {
+            0%   { transform: translateY(0px)   translateX(0px)  scale(0.85); }
+            25%  { transform: translateY(-18px)  translateX(8px)  scale(1);    }
+            50%  { transform: translateY(-36px)  translateX(-6px) scale(0.9);  }
+            75%  { transform: translateY(-18px)  translateX(10px) scale(1.02); }
+            100% { transform: translateY(0px)   translateX(0px)  scale(0.85); }
+        }
+
+        @keyframes twinkle {
+            0%, 100% { opacity: 0.25; }
+            50%       { opacity: 0.95; }
+        }
+
+        .s1  { top: 8%;  left: 8%;   animation-duration: 10s, 3.8s; }
+        .s2  { top: 16%; left: 22%;  animation-duration: 12s, 4.2s; }
+        .s3  { top: 12%; left: 42%;  animation-duration: 11s, 3.5s; }
+        .s4  { top: 9%;  left: 70%;  animation-duration: 13s, 4.6s; }
+        .s5  { top: 18%; left: 88%;  animation-duration: 9s,  3.9s; }
+        .s6  { top: 34%; left: 12%;  animation-duration: 12s, 4.3s; }
+        .s7  { top: 66%; left: 10%;  animation-duration: 13s, 4.5s; }
+        .s8  { top: 78%; left: 68%;  animation-duration: 11s, 4.0s; }
+
+        .auth-page {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 24px;
+        }
+
+        .auth-logo {
+            font-family: "Trebuchet MS", "Segoe UI", Arial, sans-serif;
+            font-size: 42px;
+            font-weight: bold;
+            color: #ffffff;
+            text-align: center;
+            margin-bottom: 6px;
+            text-shadow:
+                0 0 12px rgba(200, 150, 255, 0.65),
+                0 0 34px rgba(150, 80, 255, 0.45);
+        }
+
+        .auth-tagline {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 13px;
+            margin-bottom: 28px;
+            letter-spacing: 0.4px;
+        }
+
+        .auth-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-soft);
+            border-radius: 24px;
+            padding: 36px 32px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 20px 55px rgba(0, 0, 0, 0.28);
+        }
+
+        .auth-card h2 {
+            margin: 0 0 24px;
+            color: #ffffff;
+            font-size: 20px;
+            letter-spacing: -0.3px;
+        }
+
+        .auth-error {
+            margin-bottom: 18px;
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: rgba(255, 80, 120, 0.12);
+            border: 1px solid rgba(255, 120, 155, 0.35);
+            color: #ffd6df;
+            font-size: 14px;
+        }
+
+        .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 15px 16px;
+            border-radius: 16px;
+            border: 1px solid rgba(190, 143, 255, 0.46);
+            background: rgba(8, 5, 18, 0.92);
+            color: var(--text-main);
+            font-size: 15px;
+            outline: none;
+        }
+
+        input[type="text"]::placeholder,
+        input[type="password"]::placeholder {
+            color: #8f7aad;
+        }
+
+        input[type="text"]:focus,
+        input[type="password"]:focus {
+            border-color: #c79bff;
+            box-shadow: 0 0 0 3px rgba(167, 105, 255, 0.16);
+        }
+
+        button {
+            width: 100%;
+            padding: 13px 16px;
+            border: none;
+            border-radius: 15px;
+            background: linear-gradient(135deg, #8b5cff, #c45cff);
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 15px;
+            box-shadow: 0 0 16px rgba(169, 94, 255, 0.28);
+            transition: 0.2s ease;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+            background: linear-gradient(135deg, #9d70ff, #d579ff);
+            box-shadow: 0 0 22px rgba(205, 124, 255, 0.45);
+        }
+
+        .auth-link {
+            margin: 20px 0 0;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .auth-link a {
+            color: #c79bff;
+            text-decoration: none;
+        }
+
+        .auth-link a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="sparkles" aria-hidden="true">
+        <span class="s1"></span>
+        <span class="s2"></span>
+        <span class="s3"></span>
+        <span class="s4"></span>
+        <span class="s5"></span>
+        <span class="s6"></span>
+        <span class="s7"></span>
+        <span class="s8"></span>
+    </div>
+
+    <main class="auth-page">
+        <div class="auth-logo">TaskFlow</div>
+        <p class="auth-tagline">Personal productivity app</p>
+
+        <div class="auth-card">
+            <h2>Log in to your account</h2>
+
+            {% if error %}
+                <div class="auth-error">{{ error }}</div>
+            {% endif %}
+
+            <form action="/login" method="post" class="auth-form">
+                <input
+                    type="text"
+                    name="username"
+                    placeholder="Username"
+                    autocomplete="username"
+                    required
+                >
+                <input
+                    type="password"
+                    name="password"
+                    placeholder="Password"
+                    autocomplete="current-password"
+                    required
+                >
+                <button type="submit">Log in</button>
+            </form>
+
+            <p class="auth-link">
+                Don't have an account? <a href="/register">Register</a>
+            </p>
+        </div>
+    </main>
+</body>
+</html>

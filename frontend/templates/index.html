@@ -525,6 +525,19 @@
             font-size: 13px;
         }
 
+        .user-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+            margin-top: 20px;
+        }
+
+        .user-welcome {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
         @media (max-width: 950px) {
             .page {
                 width: min(100% - 28px, 1320px);
@@ -583,6 +596,13 @@
 
                 <h1>TaskFlow</h1>
                 <div class="author">by Viktoria Zelensky</div>
+
+                <div class="user-bar">
+                    <span class="user-welcome">{{ session.username }}</span>
+                    <form action="/logout" method="post">
+                        <button type="submit" class="secondary-button">Log out</button>
+                    </form>
+                </div>
 
                 <div class="description">
                     <p>
