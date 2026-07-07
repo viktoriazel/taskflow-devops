@@ -29,3 +29,14 @@ Thumbs.db
 *.db
 *.sqlite
 *.sqlite3
+# Local project notes - not submitted
+docs/
+
+# Terraform local runtime/state/secrets
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfvars
+terraform/*.tfvars.json
+terraform/crash.log
+terraform/*.tfplan
