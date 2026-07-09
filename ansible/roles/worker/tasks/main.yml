@@ -1,1 +1,78 @@
 ---
+- name: Create /opt/taskflow/worker directory
+  ansible.builtin.file:
+    path: /opt/taskflow/worker
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Copy worker application code
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../worker/worker.py"
+    dest: /opt/taskflow/worker/worker.py
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+  notify: restart taskflow-worker
+
+- name: Copy worker requirements file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../worker/requirements.txt"
+    dest: /opt/taskflow/worker/requirements.txt
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+
+- name: Create virtualenv and install worker dependencies
+  ansible.builtin.pip:
+    requirements: /opt/taskflow/worker/requirements.txt
+    virtualenv: /opt/taskflow/worker/venv
+    virtualenv_command: python3 -m venv
+  notify: restart taskflow-worker
+
+- name: Ensure worker venv is owned by ubuntu
+  ansible.builtin.file:
+    path: /opt/taskflow/worker/venv
+    state: directory
+    recurse: true
+    owner: ubuntu
+    group: ubuntu
+
+- name: Template worker .env file
+  ansible.builtin.template:
+    src: env.j2
+    dest: /opt/taskflow/worker/.env
+    owner: ubuntu
+    group: ubuntu
+    mode: '0600'
+  notify: restart taskflow-worker
+
+- name: Template worker systemd unit
+  ansible.builtin.template:
+    src: taskflow-worker.service.j2
+    dest: /etc/systemd/system/taskflow-worker.service
+    mode: '0644'
+  notify:
+    - reload systemd daemon
+    - restart taskflow-worker
+
+- name: Ensure worker service is enabled and started
+  ansible.builtin.systemd:
+    name: taskflow-worker
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending worker handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify worker health endpoint
+  ansible.builtin.uri:
+    url: http://127.0.0.1:6000/health
+    status_code: 200
+  register: worker_health
+  retries: 5
+  delay: 2
+  until: worker_health.status == 200
+  when: not ansible_check_mode

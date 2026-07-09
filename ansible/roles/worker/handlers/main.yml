@@ -1,0 +1,9 @@
+---
+- name: reload systemd daemon
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: restart taskflow-worker
+  ansible.builtin.systemd:
+    name: taskflow-worker
+    state: restarted

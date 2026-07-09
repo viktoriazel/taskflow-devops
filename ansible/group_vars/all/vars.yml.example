@@ -1,0 +1,3 @@
+---
+aws_region: your-aws-region
+sns_topic_arn: "arn:aws:sns:your-region:your-account-id:your-topic-name"
