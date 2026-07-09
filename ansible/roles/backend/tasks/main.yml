@@ -1,1 +1,84 @@
 ---
+- name: Create /opt/taskflow/backend directory
+  ansible.builtin.file:
+    path: /opt/taskflow/backend
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Copy backend application code
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/opt/taskflow/backend/{{ item | basename }}"
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+  loop:
+    - "{{ playbook_dir }}/../backend/app.py"
+    - "{{ playbook_dir }}/../backend/db.py"
+  notify: restart taskflow-backend
+
+- name: Copy backend requirements file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../backend/requirements.txt"
+    dest: /opt/taskflow/backend/requirements.txt
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+
+- name: Create virtualenv and install backend dependencies
+  ansible.builtin.pip:
+    requirements: /opt/taskflow/backend/requirements.txt
+    virtualenv: /opt/taskflow/backend/venv
+    virtualenv_command: python3 -m venv
+  notify: restart taskflow-backend
+
+- name: Ensure backend venv is owned by ubuntu
+  ansible.builtin.file:
+    path: /opt/taskflow/backend/venv
+    state: directory
+    recurse: true
+    owner: ubuntu
+    group: ubuntu
+
+- name: Template backend .env file
+  ansible.builtin.template:
+    src: env.j2
+    dest: /opt/taskflow/backend/.env
+    owner: ubuntu
+    group: ubuntu
+    mode: '0600'
+  no_log: true
+  notify: restart taskflow-backend
+
+- name: Template backend systemd unit
+  ansible.builtin.template:
+    src: taskflow-backend.service.j2
+    dest: /etc/systemd/system/taskflow-backend.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - reload systemd daemon
+    - restart taskflow-backend
+
+- name: Ensure backend service is enabled and started
+  ansible.builtin.systemd:
+    name: taskflow-backend
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending backend handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify backend health endpoint
+  ansible.builtin.uri:
+    url: http://127.0.0.1:5000/health
+    status_code: 200
+  register: backend_health
+  retries: 5
+  delay: 2
+  until: backend_health.status == 200
+  when: not ansible_check_mode

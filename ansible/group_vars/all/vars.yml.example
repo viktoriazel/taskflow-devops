@@ -1,3 +1,8 @@
 ---
 aws_region: your-aws-region
 sns_topic_arn: "arn:aws:sns:your-region:your-account-id:your-topic-name"
+db_host: your-rds-endpoint.amazonaws.com
+db_name: your-database-name
+db_user: your-database-user
+db_port: 5432
+s3_bucket_name: your-s3-bucket-name
