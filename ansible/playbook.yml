@@ -1,0 +1,21 @@
+---
+- name: Configure worker
+  hosts: worker
+  become: true
+  roles:
+    - common
+    - worker
+
+- name: Configure backend
+  hosts: backend
+  become: true
+  roles:
+    - common
+    - backend
+
+- name: Configure frontend
+  hosts: frontend
+  become: true
+  roles:
+    - common
+    - frontend

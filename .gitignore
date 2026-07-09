@@ -41,3 +41,8 @@ terraform/*.tfvars
 terraform/*.tfvars.json
 terraform/crash.log
 terraform/*.tfplan
+
+# Ansible local runtime/secrets
+ansible/inventory.ini
+ansible/group_vars/all/secrets.yml
+*.retry
