@@ -1,1 +1,143 @@
 ---
+- name: Create /opt/taskflow/frontend directory
+  ansible.builtin.file:
+    path: /opt/taskflow/frontend
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+
+- name: Copy frontend application code
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../frontend/app.py"
+    dest: /opt/taskflow/frontend/app.py
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+  notify: restart taskflow-frontend
+
+- name: Copy frontend templates directory
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../frontend/templates"
+    dest: /opt/taskflow/frontend/
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+    directory_mode: '0755'
+  notify: restart taskflow-frontend
+
+- name: Copy frontend requirements file
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../frontend/requirements.txt"
+    dest: /opt/taskflow/frontend/requirements.txt
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+
+- name: Create virtualenv and install frontend dependencies
+  ansible.builtin.pip:
+    requirements: /opt/taskflow/frontend/requirements.txt
+    virtualenv: /opt/taskflow/frontend/venv
+    virtualenv_command: python3 -m venv
+  notify: restart taskflow-frontend
+
+- name: Ensure frontend venv is owned by ubuntu
+  ansible.builtin.file:
+    path: /opt/taskflow/frontend/venv
+    state: directory
+    recurse: true
+    owner: ubuntu
+    group: ubuntu
+
+- name: Template frontend .env file
+  ansible.builtin.template:
+    src: env.j2
+    dest: /opt/taskflow/frontend/.env
+    owner: ubuntu
+    group: ubuntu
+    mode: '0600'
+  no_log: true
+  notify: restart taskflow-frontend
+
+- name: Template frontend systemd unit
+  ansible.builtin.template:
+    src: taskflow-frontend.service.j2
+    dest: /etc/systemd/system/taskflow-frontend.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - reload systemd daemon
+    - restart taskflow-frontend
+
+- name: Ensure frontend service is enabled and started
+  ansible.builtin.systemd:
+    name: taskflow-frontend
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending frontend handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify frontend local health endpoint
+  ansible.builtin.uri:
+    url: http://127.0.0.1:8000/health
+    status_code: 200
+  register: frontend_health
+  retries: 5
+  delay: 2
+  until: frontend_health.status == 200
+  when: not ansible_check_mode
+
+- name: Install nginx package
+  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure nginx is enabled and started
+  ansible.builtin.systemd:
+    name: nginx
+    enabled: true
+    state: started
+
+- name: Template nginx site config
+  ansible.builtin.template:
+    src: taskflow.conf.j2
+    dest: /etc/nginx/sites-available/taskflow
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload nginx
+
+- name: Enable nginx site
+  ansible.builtin.file:
+    src: /etc/nginx/sites-available/taskflow
+    dest: /etc/nginx/sites-enabled/taskflow
+    state: link
+  notify: reload nginx
+
+- name: Remove default nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  notify: reload nginx
+
+- name: Validate nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+- name: Apply pending nginx handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify public health endpoint through Nginx
+  ansible.builtin.uri:
+    url: http://127.0.0.1/health
+    status_code: 200
+  register: nginx_health
+  retries: 5
+  delay: 2
+  until: nginx_health.status == 200
+  when: not ansible_check_mode
