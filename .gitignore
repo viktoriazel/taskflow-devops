@@ -2,6 +2,8 @@
 .env
 .env.local
 *.pem
+*.key
+id_rsa*
 *.csv
 *.ods
 
@@ -46,3 +48,4 @@ terraform/*.tfplan
 ansible/inventory.ini
 ansible/group_vars/all/vars.yml
 *.retry
+vault_pass*.txt

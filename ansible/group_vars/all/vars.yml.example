@@ -1,8 +1,12 @@
 ---
-aws_region: your-aws-region
-sns_topic_arn: "arn:aws:sns:your-region:your-account-id:your-topic-name"
-db_host: your-rds-endpoint.amazonaws.com
-db_name: your-database-name
-db_user: your-database-user
-db_port: 5432
-s3_bucket_name: your-s3-bucket-name
+# Values below come from `terraform output` after `terraform apply` (see terraform/outputs.tf),
+# except where noted. Copy this file to vars.yml and fill in the real values - vars.yml is gitignored.
+# db_password is NOT here - it lives only in the encrypted ansible/group_vars/all/secrets.yml (Ansible Vault).
+
+aws_region: your-aws-region  # terraform output aws_region
+sns_topic_arn: "arn:aws:sns:your-region:your-account-id:your-topic-name"  # terraform output sns_topic_arn
+db_host: your-rds-endpoint.amazonaws.com  # terraform output rds_endpoint (host only, without the :5432 port suffix)
+db_name: your-database-name  # must match terraform.tfvars: db_name (not a Terraform output)
+db_user: your-database-user  # must match terraform.tfvars: db_username (not a Terraform output)
+db_port: 5432  # standard PostgreSQL port, not sourced from Terraform
+s3_bucket_name: your-s3-bucket-name  # terraform output s3_bucket_name

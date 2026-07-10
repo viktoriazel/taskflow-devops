@@ -1,12 +1,20 @@
+# Values below come from `terraform output` after `terraform apply` (see terraform/outputs.tf).
+# Copy this file to inventory.ini and fill in the real values - inventory.ini is gitignored.
+
 [frontend]
+# ansible_host: terraform output frontend_public_ip
 taskflow_frontend ansible_host=FRONTEND_PUBLIC_IP
 
 [backend]
+# ansible_host: terraform output backend_private_ip
 taskflow_backend ansible_host=BACKEND_PRIVATE_IP
 
 [worker]
+# ansible_host: terraform output worker_private_ip
 taskflow_worker ansible_host=WORKER_PRIVATE_IP
 
+# FRONTEND_PUBLIC_IP here is the same terraform output frontend_public_ip used above -
+# it is the SSH bastion for the ProxyCommand jumps in both blocks below.
 [backend:vars]
 ansible_ssh_common_args='-o IdentitiesOnly=yes -o ProxyCommand="ssh -i /path/to/YOUR_KEY.pem -o IdentitiesOnly=yes -W %h:%p ubuntu@FRONTEND_PUBLIC_IP"'
 
@@ -15,5 +23,7 @@ ansible_ssh_common_args='-o IdentitiesOnly=yes -o ProxyCommand="ssh -i /path/to/
 
 [all:vars]
 ansible_user=ubuntu
+# ansible_ssh_private_key_file is NOT a Terraform output - point it at your own local
+# private key file (matching terraform.tfvars: key_pair_name), kept outside this repo.
 ansible_ssh_private_key_file=/path/to/YOUR_KEY.pem
 ansible_python_interpreter=/usr/bin/python3

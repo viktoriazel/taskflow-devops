@@ -46,6 +46,7 @@
     owner: ubuntu
     group: ubuntu
     mode: '0600'
+  no_log: true
   notify: restart taskflow-worker
 
 - name: Template worker systemd unit

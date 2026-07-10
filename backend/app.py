@@ -140,7 +140,7 @@ def register():
 
     Reads a JSON body with "username" and "password" fields. Validates
     that the username is not already taken and the password is at least
-    8 characters, then stores a bcrypt hash of the password in the
+    8 characters, then stores a Werkzeug password hash in the
     PostgreSQL users table.
 
     Returns:
@@ -193,7 +193,7 @@ def login():
     Authenticate a user and return their account info.
 
     Reads a JSON body with "username" and "password" fields. Looks up the
-    user in PostgreSQL and verifies the bcrypt password hash. No session is
+    user in PostgreSQL and verifies the Werkzeug password hash. No session is
     created here — the Frontend stores the returned user ID in its own
     session and sends it back as an X-User-Id header on future requests.
 
