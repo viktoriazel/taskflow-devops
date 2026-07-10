@@ -9,6 +9,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/opt/taskflow/backend
 EnvironmentFile=/opt/taskflow/backend/.env
+ExecStartPre=/opt/taskflow/backend/venv/bin/python3 -c "from db import init_database; init_database()"
 ExecStart=/opt/taskflow/backend/venv/bin/gunicorn \
     --workers 2 \
     --bind 0.0.0.0:5000 \
