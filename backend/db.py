@@ -50,11 +50,21 @@ def init_database():
     schema. Safe to call on every startup because all statements use
     IF NOT EXISTS / ADD COLUMN IF NOT EXISTS.
 
+    A PostgreSQL advisory lock serializes this against other processes
+    (other Gunicorn workers, other Kubernetes Pods) running the same
+    startup logic at the same time — CREATE TABLE IF NOT EXISTS alone is
+    not safe against concurrent, not-yet-committed transactions.
+
     Side Effects:
         - Runs DDL statements against PostgreSQL and commits them.
     """
     with get_connection() as connection:
         with connection.cursor() as cursor:
+            cursor.execute("SET LOCAL lock_timeout = '10s'")
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("taskflow_backend_init_database",),
+            )
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
