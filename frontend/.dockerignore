@@ -1,0 +1,39 @@
+# Secrets and any .env variants
+.env*
+
+# Keys and credentials
+*.pem
+*.key
+id_rsa*
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Docker meta-files
+Dockerfile
+.dockerignore
+
+# Git (defensive; build context is frontend/)
+.git
+.gitignore
