@@ -71,3 +71,22 @@ output "sns_topic_arn" {
   description = "ARN of the SNS topic for notifications"
   value       = aws_sns_topic.main.arn
 }
+
+# -----------------------------------------------------------------------------
+# Container Registry
+# -----------------------------------------------------------------------------
+
+output "frontend_ecr_repository_url" {
+  description = "URL of the Frontend ECR repository, for future image pushes"
+  value       = aws_ecr_repository.frontend.repository_url
+}
+
+output "backend_ecr_repository_url" {
+  description = "URL of the Backend ECR repository, for future image pushes"
+  value       = aws_ecr_repository.backend.repository_url
+}
+
+output "worker_ecr_repository_url" {
+  description = "URL of the Worker ECR repository, for future image pushes"
+  value       = aws_ecr_repository.worker.repository_url
+}
