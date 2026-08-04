@@ -12,14 +12,20 @@ output "vpc_id" {
   value       = aws_vpc.main.id
 }
 
-output "public_subnet_id" {
-  description = "ID of the public subnet (Frontend EC2, NAT Gateway)"
-  value       = aws_subnet.public.id
+output "public_subnet_ids" {
+  description = "IDs of the public subnets for future internet-facing load balancing"
+  value = [
+    aws_subnet.public_1.id,
+    aws_subnet.public_2.id
+  ]
 }
 
-output "private_app_subnet_id" {
-  description = "ID of the private app subnet (Backend EC2, Worker EC2)"
-  value       = aws_subnet.private_app.id
+output "private_app_subnet_ids" {
+  description = "IDs of the private application subnets for future EKS workloads"
+  value = [
+    aws_subnet.private_app_1.id,
+    aws_subnet.private_app_2.id
+  ]
 }
 
 output "private_db_subnet_ids" {
@@ -31,57 +37,34 @@ output "private_db_subnet_ids" {
 # Security Groups
 # -----------------------------------------------------------------------------
 
-output "sg_frontend_id" {
-  description = "ID of the Frontend security group"
-  value       = aws_security_group.frontend.id
-}
-
-output "sg_backend_id" {
-  description = "ID of the Backend security group"
-  value       = aws_security_group.backend.id
-}
-
-output "sg_worker_id" {
-  description = "ID of the Worker security group"
-  value       = aws_security_group.worker.id
-}
-
 output "sg_rds_id" {
   description = "ID of the RDS security group"
   value       = aws_security_group.rds.id
 }
 
 # -----------------------------------------------------------------------------
-# Compute
-# -----------------------------------------------------------------------------
-
-output "frontend_public_ip" {
-  description = "Public IP of the Frontend/Nginx EC2 instance"
-  value       = aws_instance.frontend.public_ip
-}
-
-output "backend_private_ip" {
-  description = "Private IP of the Backend EC2 instance"
-  value       = aws_instance.backend.private_ip
-}
-
-output "worker_private_ip" {
-  description = "Private IP of the Worker EC2 instance"
-  value       = aws_instance.worker.private_ip
-}
-
-# -----------------------------------------------------------------------------
 # Data layer
 # -----------------------------------------------------------------------------
 
-output "rds_endpoint" {
-  description = "RDS PostgreSQL connection endpoint"
-  value       = aws_db_instance.main.endpoint
+output "rds_address" {
+  description = "Hostname of the private RDS PostgreSQL instance"
+  value       = aws_db_instance.main.address
+}
+
+output "rds_master_user_secret_arn" {
+  description = "ARN pointer to the RDS-managed master secret; this is not the secret value and remains stored in Terraform state"
+  value       = aws_db_instance.main.master_user_secret[0].secret_arn
+  sensitive   = true
 }
 
 output "s3_bucket_name" {
   description = "Name of the S3 bucket for file uploads"
   value       = aws_s3_bucket.uploads.bucket
+}
+
+output "s3_bucket_arn" {
+  description = "ARN of the private uploads S3 bucket"
+  value       = aws_s3_bucket.uploads.arn
 }
 
 output "sns_topic_arn" {

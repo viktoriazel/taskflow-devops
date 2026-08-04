@@ -22,12 +22,10 @@ resource "aws_s3_bucket" "uploads" {
     }
   }
 
-  tags = {
-    Name        = local.uploads_bucket_name
-    Project     = var.project_name
-    Environment = var.environment
-    Purpose     = "uploads"
-  }
+  tags = merge(local.common_tags, {
+    Name    = local.uploads_bucket_name
+    Purpose = "uploads"
+  })
 }
 
 # Blocks all public access - the app reaches objects only via presigned URLs
@@ -51,7 +49,13 @@ resource "aws_s3_bucket_ownership_controls" "uploads" {
   }
 }
 
-# SSE-S3 (AWS-managed key) - no extra KMS resource or IAM permissions needed.
+# Encrypted at rest with SSE-S3 (AES256, AWS-managed key). A customer-managed
+# KMS key was evaluated and intentionally not adopted here: it would add a new
+# KMS resource, a hand-authored key policy, a recurring per-key cost, and
+# additional IAM permissions for the future Backend role - complexity not
+# justified for this disposable dev/learning environment. Accepted trade-off,
+# not a false positive; see project Decision Register.
+#trivy:ignore:AWS-0132
 resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
   bucket = aws_s3_bucket.uploads.id
 

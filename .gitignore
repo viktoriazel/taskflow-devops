@@ -39,10 +39,12 @@ docs/
 terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.backup
+terraform/terraform.tfstate.d/
 terraform/*.tfvars
 terraform/*.tfvars.json
 terraform/crash.log
 terraform/*.tfplan
+terraform/tfplan
 
 # Ansible local runtime/secrets
 ansible/inventory.ini

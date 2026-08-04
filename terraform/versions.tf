@@ -1,7 +1,5 @@
 terraform {
-  # >= 1.11.0 is required for ephemeral variables and write-only arguments
-  # (used in rds.tf for password_wo, so the RDS master password never
-  # gets written to terraform.tfstate).
+  # Minimum Terraform version required by this configuration.
   required_version = ">= 1.11.0"
 
   required_providers {
