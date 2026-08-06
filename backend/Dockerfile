@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
 
 # Predictable Python runtime behavior
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -23,7 +23,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code — root-owned, read-only for appuser
-COPY --chmod=0644 app.py db.py .
+COPY --chmod=0644 app.py db.py ./
 
 USER appuser
 
