@@ -95,3 +95,26 @@ variable "private_app_subnet_2_cidr" {
   type        = string
   default     = "10.0.14.0/24"
 }
+
+# -----------------------------------------------------------------------------
+# EKS
+# -----------------------------------------------------------------------------
+
+variable "kubernetes_version" {
+  description = "EKS control plane Kubernetes version"
+  type        = string
+  default     = "1.35"
+}
+
+variable "admin_access_cidr" {
+  description = "Restricted /32 CIDR allowed to reach the EKS public API endpoint"
+  type        = string
+
+  validation {
+    condition = (
+      can(regex("^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}/32$", var.admin_access_cidr)) &&
+      can(cidrhost(var.admin_access_cidr, 0))
+    )
+    error_message = "admin_access_cidr must be a syntactically valid IPv4 /32 CIDR (e.g. 203.0.113.10/32) - not a wider range, not 0.0.0.0/0, not IPv6."
+  }
+}

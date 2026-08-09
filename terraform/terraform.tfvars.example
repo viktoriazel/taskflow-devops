@@ -23,3 +23,6 @@ public_subnet_1_cidr      = "10.0.11.0/24"
 public_subnet_2_cidr      = "10.0.12.0/24"
 private_app_subnet_1_cidr = "10.0.13.0/24"
 private_app_subnet_2_cidr = "10.0.14.0/24"
+
+# EKS — restrict this to YOUR current public IP as an exact /32, never a wider range
+admin_access_cidr = "REPLACE_WITH_YOUR_IP/32"

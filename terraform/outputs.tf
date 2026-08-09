@@ -90,3 +90,22 @@ output "worker_ecr_repository_url" {
   description = "URL of the Worker ECR repository, for future image pushes"
   value       = aws_ecr_repository.worker.repository_url
 }
+
+# -----------------------------------------------------------------------------
+# EKS
+# -----------------------------------------------------------------------------
+
+output "eks_cluster_name" {
+  description = "Name of the EKS cluster"
+  value       = module.eks.cluster_name
+}
+
+output "eks_cluster_endpoint" {
+  description = "Kubernetes API server endpoint for the EKS cluster"
+  value       = module.eks.cluster_endpoint
+}
+
+output "eks_oidc_provider_arn" {
+  description = "ARN of the cluster's IAM OIDC provider, for future Backend/Worker IRSA role trust policies"
+  value       = module.eks.oidc_provider_arn
+}

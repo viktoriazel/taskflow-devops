@@ -8,4 +8,6 @@ locals {
     Environment = var.environment
     ManagedBy   = "Terraform"
   }
+
+  cluster_name = "${var.project_name}-${var.environment}-eks"
 }
