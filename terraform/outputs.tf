@@ -109,3 +109,8 @@ output "eks_oidc_provider_arn" {
   description = "ARN of the cluster's IAM OIDC provider, for future Backend/Worker IRSA role trust policies"
   value       = module.eks.oidc_provider_arn
 }
+
+output "aws_load_balancer_controller_role_arn" {
+  description = "ARN of the dedicated EKS Pod Identity role for the AWS Load Balancer Controller"
+  value       = aws_iam_role.lb_controller_pod_identity.arn
+}
