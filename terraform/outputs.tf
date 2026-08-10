@@ -106,7 +106,7 @@ output "eks_cluster_endpoint" {
 }
 
 output "eks_oidc_provider_arn" {
-  description = "ARN of the cluster's IAM OIDC provider, for future Backend/Worker IRSA role trust policies"
+  description = "ARN of the cluster's IAM OIDC provider, retained as part of the EKS identity foundation"
   value       = module.eks.oidc_provider_arn
 }
 
