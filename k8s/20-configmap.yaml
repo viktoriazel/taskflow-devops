@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: taskflow-config
+  namespace: devops-app
+  labels:
+    app.kubernetes.io/part-of: taskflow
+data:
+  DB_HOST: "taskflow-dev-rds-postgres.ct2iwaagmtnl.eu-north-1.rds.amazonaws.com"
+  DB_NAME: "todo_db"
+  DB_PORT: "5432"
+  WORKER_URL: "http://worker.devops-app.svc.cluster.local:6000"
+  AWS_REGION: "eu-north-1"
+  S3_BUCKET_NAME: "taskflow-dev-uploads-034869165452"
+  SNS_TOPIC_ARN: "arn:aws:sns:eu-north-1:034869165452:taskflow-dev-notifications"
+  BACKEND_URL: "http://backend.devops-app.svc.cluster.local:5000"

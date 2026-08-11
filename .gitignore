@@ -51,3 +51,7 @@ ansible/inventory.ini
 ansible/group_vars/all/vars.yml
 *.retry
 vault_pass*.txt
+
+# Real Secret manifests must never be committed — direct children of k8s/ only.
+# Tracked examples live under k8s/examples/*.example.yaml and are unaffected.
+/k8s/secret-*.yaml
