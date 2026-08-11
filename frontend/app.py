@@ -322,5 +322,19 @@ def health_check():
     return {"status": "frontend is running"}
 
 
+@app.route("/live")
+def liveness_check():
+    """Kubernetes liveness probe — confirms this worker can complete an HTTP round trip. No backend/AWS calls."""
+    return {"status": "alive"}, 200
+
+
+@app.route("/ready")
+def readiness_check():
+    """Kubernetes/ALB readiness probe — confirms SECRET_KEY loaded (needed for session cookies), without exposing it."""
+    if not app.secret_key:
+        return {"status": "not ready"}, 503
+    return {"status": "ready"}, 200
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=8000, debug=False)

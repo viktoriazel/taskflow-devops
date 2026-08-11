@@ -133,6 +133,26 @@ def health_check():
     }), 200
 
 
+@app.route("/live", methods=["GET"])
+def liveness_check():
+    """Kubernetes liveness probe — confirms this worker can complete an HTTP round trip. No DB/AWS calls."""
+    return jsonify({
+        "service": "backend",
+        "check": "live",
+        "status": "ok",
+    }), 200
+
+
+@app.route("/ready", methods=["GET"])
+def readiness_check():
+    """Kubernetes readiness probe — no new DB call, since init_database() already fails fast at startup."""
+    return jsonify({
+        "service": "backend",
+        "check": "ready",
+        "status": "ok",
+    }), 200
+
+
 @app.route("/auth/register", methods=["POST"])
 def register():
     """
