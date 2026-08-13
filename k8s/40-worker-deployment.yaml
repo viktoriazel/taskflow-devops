@@ -33,7 +33,7 @@ spec:
               app.kubernetes.io/name: worker
       containers:
         - name: worker
-          image: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker:v0.1.0
+          image: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker:v0.1.2
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 6000
@@ -57,7 +57,7 @@ spec:
               memory: 256Mi
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 6000
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -65,7 +65,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /health
+              path: /live
               port: 6000
             initialDelaySeconds: 10
             periodSeconds: 15
