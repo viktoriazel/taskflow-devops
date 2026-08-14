@@ -118,3 +118,13 @@ variable "admin_access_cidr" {
     error_message = "admin_access_cidr must be a syntactically valid IPv4 /32 CIDR (e.g. 203.0.113.10/32) - not a wider range, not 0.0.0.0/0, not IPv6."
   }
 }
+
+# -----------------------------------------------------------------------------
+# SNS
+# -----------------------------------------------------------------------------
+
+variable "sns_notification_email" {
+  description = "Email address subscribed to the SNS notifications topic"
+  type        = string
+  sensitive   = true
+}

@@ -18,3 +18,12 @@ resource "aws_sns_topic" "main" {
     Purpose = "notifications"
   })
 }
+
+# Email subscription for real-recipient evidence of application-triggered
+# notifications. Requires manual confirmation by the recipient outside
+# Terraform - AWS sends a confirmation link to the email below on apply.
+resource "aws_sns_topic_subscription" "email" {
+  topic_arn = aws_sns_topic.main.arn
+  protocol  = "email"
+  endpoint  = var.sns_notification_email
+}
