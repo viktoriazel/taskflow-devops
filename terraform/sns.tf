@@ -7,7 +7,7 @@
 # AWS-managed key, it would require explicit KMS permissions for the future
 # Worker role plus a recurring per-key cost - complexity not justified for
 # this disposable dev/learning environment. Accepted trade-off, not a false
-# positive; see project Decision Register.
+# positive.
 #trivy:ignore:AWS-0136
 resource "aws_sns_topic" "main" {
   name              = "${var.project_name}-${var.environment}-notifications"

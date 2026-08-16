@@ -3,8 +3,8 @@
 #
 # All Security Groups are created without inline rules to avoid circular
 # dependencies when SG rules cross-reference each other by ID.
-# All ingress/egress rules are defined below as separate
-# aws_security_group_rule resources.
+# Ingress and egress rules, where needed, are defined below as separate
+# rule resources rather than inline Security Group rules.
 # -----------------------------------------------------------------------------
 
 resource "aws_security_group" "rds" {

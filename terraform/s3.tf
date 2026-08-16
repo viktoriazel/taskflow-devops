@@ -54,7 +54,7 @@ resource "aws_s3_bucket_ownership_controls" "uploads" {
 # KMS resource, a hand-authored key policy, a recurring per-key cost, and
 # additional IAM permissions for the future Backend role - complexity not
 # justified for this disposable dev/learning environment. Accepted trade-off,
-# not a false positive; see project Decision Register.
+# not a false positive.
 #trivy:ignore:AWS-0132
 resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
   bucket = aws_s3_bucket.uploads.id
