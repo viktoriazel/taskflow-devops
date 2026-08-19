@@ -29,3 +29,12 @@ admin_access_cidr = "REPLACE_WITH_YOUR_IP/32"
 
 # SNS — email address that will receive TaskFlow notifications (requires manual confirmation)
 sns_notification_email = "REPLACE_WITH_NOTIFICATION_EMAIL"
+
+# DNS — a public domain that YOU own. Manual prerequisites, all of them
+# outside the Terraform lifecycle:
+#   - a public Route 53 hosted zone for the domain already exists
+#   - the registrar's NS records delegate the domain to that hosted zone
+# Terraform only reads the zone through a data source; it never creates, owns,
+# or destroys the hosted zone or the domain registration.
+# The reference deployment of this project uses taskflow.plus.
+domain_name = "REPLACE_WITH_YOUR_DOMAIN"

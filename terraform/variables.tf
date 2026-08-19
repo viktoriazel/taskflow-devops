@@ -128,3 +128,12 @@ variable "sns_notification_email" {
   type        = string
   sensitive   = true
 }
+
+# -----------------------------------------------------------------------------
+# DNS
+# -----------------------------------------------------------------------------
+
+variable "domain_name" {
+  description = "Public DNS domain managed in Route 53 for TaskFlow ingress and Jenkins webhook endpoints"
+  type        = string
+}

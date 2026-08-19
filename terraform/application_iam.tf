@@ -2,7 +2,7 @@
 # Application IAM - Backend/Worker EKS Pod Identity foundation
 #
 # Provisions only the AWS-side IAM identity for the Backend and Worker
-# application workloads (Phase 9). Permissions live on dedicated Pod Identity
+# application workloads. Permissions live on dedicated Pod Identity
 # roles tied to each service's own ServiceAccount - not on the shared Node
 # IAM role - matching the pattern already used for the VPC CNI and AWS Load
 # Balancer Controller roles above.

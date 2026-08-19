@@ -1,0 +1,26 @@
+# Encrypted gp3 StorageClass backed by the EBS CSI driver.
+#
+# Not marked as the cluster default: every PVC references it explicitly via
+# storageClassName, so no workload picks up EBS storage by accident. The
+# pre-existing gp2 class created during cluster bootstrap is left untouched.
+#
+# WaitForFirstConsumer is what keeps the volume in the same Availability Zone
+# as the Pod that claims it - an EBS volume can only be attached to a node in
+# its own AZ.
+#
+# encrypted must be set explicitly: EBS encryption-by-default is off at the
+# account level. No kmsKeyId, so the AWS-managed aws/ebs key is used.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: taskflow-gp3
+  labels:
+    app.kubernetes.io/part-of: taskflow
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+  csi.storage.k8s.io/fstype: ext4
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true

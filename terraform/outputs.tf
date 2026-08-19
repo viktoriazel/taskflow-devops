@@ -114,3 +114,14 @@ output "aws_load_balancer_controller_role_arn" {
   description = "ARN of the dedicated EKS Pod Identity role for the AWS Load Balancer Controller"
   value       = aws_iam_role.lb_controller_pod_identity.arn
 }
+
+# -----------------------------------------------------------------------------
+# DNS / TLS
+# -----------------------------------------------------------------------------
+
+# Taken from the validation resource rather than from the certificate itself,
+# so consumers can only read the ARN once ACM has actually issued it.
+output "jenkins_certificate_arn" {
+  description = "ARN of the ACM certificate for the Jenkins webhook endpoint, used by the future Ingress annotation"
+  value       = aws_acm_certificate_validation.jenkins.certificate_arn
+}
