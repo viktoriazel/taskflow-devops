@@ -324,13 +324,19 @@ def health_check():
 
 @app.route("/live")
 def liveness_check():
-    """Kubernetes liveness probe — confirms this worker can complete an HTTP round trip. No backend/AWS calls."""
+    """Kubernetes liveness probe — confirms this worker can complete an HTTP round trip.
+
+    Makes no backend or AWS calls.
+    """
     return {"status": "alive"}, 200
 
 
 @app.route("/ready")
 def readiness_check():
-    """Kubernetes/ALB readiness probe — confirms SECRET_KEY loaded (needed for session cookies), without exposing it."""
+    """Kubernetes/ALB readiness probe — confirms SECRET_KEY is loaded, without exposing it.
+
+    SECRET_KEY is what signs the session cookie, so the service is not usable without it.
+    """
     if not app.secret_key:
         return {"status": "not ready"}, 503
     return {"status": "ready"}, 200

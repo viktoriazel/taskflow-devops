@@ -1,0 +1,37 @@
+# Tool configuration only. TaskFlow ships as container images, not as an
+# installable distribution, so there is no [project] section here.
+
+[tool.pytest.ini_options]
+# Set explicitly rather than inherited from the pytest default, so the JUnit XML
+# schema stays stable for report parsers.
+junit_family = "xunit2"
+
+addopts = "-ra"
+
+[tool.ruff]
+# Matches the python:3.12-slim-bookworm base image.
+target-version = "py312"
+line-length = 100
+
+extend-exclude = ["terraform/.terraform"]
+
+# Import roots for isort: each image copies one service's modules flat into
+# /app, so `from db import ...` is first-party, not a third-party package.
+src = [".", "backend", "frontend", "worker"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 6 of the 9 connection/cursor blocks call connection.commit() after the cursor
+# closes, so they cannot be merged; ignored here to keep one uniform shape.
+"backend/db.py" = ["SIM117"]

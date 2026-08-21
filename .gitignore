@@ -18,6 +18,15 @@ __pycache__/
 *.pyo
 *.pyd
 
+# Test and lint artifacts - regenerated on every run.
+# reports/ holds the JUnit XML that CI publishes as a build artifact; the result
+# belongs to a build, not to the source tree.
+reports/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+
 # Logs
 *.log
 

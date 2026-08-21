@@ -135,7 +135,10 @@ def health_check():
 
 @app.route("/live", methods=["GET"])
 def liveness_check():
-    """Kubernetes liveness probe — confirms this worker can complete an HTTP round trip. No DB/AWS calls."""
+    """Kubernetes liveness probe — confirms this worker can complete an HTTP round trip.
+
+    Makes no DB or AWS calls.
+    """
     return jsonify({
         "service": "backend",
         "check": "live",
@@ -145,7 +148,10 @@ def liveness_check():
 
 @app.route("/ready", methods=["GET"])
 def readiness_check():
-    """Kubernetes readiness probe — no new DB call, since init_database() already fails fast at startup."""
+    """Kubernetes readiness probe — makes no new DB call.
+
+    init_database() already fails fast at startup.
+    """
     return jsonify({
         "service": "backend",
         "check": "ready",
@@ -512,7 +518,12 @@ def upload_file(todo_id):
 
     updated_todo = add_file_to_todo(todo_id, file_key)
 
-    app.logger.info("File uploaded: todo_id=%s, user_id=%s, filename=%s", todo_id, user_id, filename)
+    app.logger.info(
+        "File uploaded: todo_id=%s, user_id=%s, filename=%s",
+        todo_id,
+        user_id,
+        filename,
+    )
 
     notify_worker("file_uploaded", updated_todo["title"])
 

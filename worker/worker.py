@@ -73,7 +73,10 @@ def health_check():
 
 @app.route("/live", methods=["GET"])
 def liveness_check():
-    """Kubernetes liveness probe — confirms this worker can complete an HTTP round trip. No SNS calls."""
+    """Kubernetes liveness probe — confirms this worker can complete an HTTP round trip.
+
+    Makes no SNS calls.
+    """
     return jsonify({
         "service": "worker",
         "check": "live",
@@ -83,7 +86,10 @@ def liveness_check():
 
 @app.route("/ready", methods=["GET"])
 def readiness_check():
-    """Kubernetes readiness probe — no SNS call; AWS_REGION/SNS_TOPIC_ARN already fail fast at startup."""
+    """Kubernetes readiness probe — makes no SNS call.
+
+    AWS_REGION and SNS_TOPIC_ARN already fail fast at startup.
+    """
     return jsonify({
         "service": "worker",
         "check": "ready",
