@@ -1,15 +1,12 @@
-# Encrypted gp3 StorageClass backed by the EBS CSI driver.
+# Encrypted gp3 StorageClass provisioned by the Amazon EBS CSI driver.
 #
-# Not marked as the cluster default: every PVC references it explicitly via
-# storageClassName, so no workload picks up EBS storage by accident. The
-# pre-existing gp2 class created during cluster bootstrap is left untouched.
-#
-# WaitForFirstConsumer is what keeps the volume in the same Availability Zone
-# as the Pod that claims it - an EBS volume can only be attached to a node in
-# its own AZ.
-#
-# encrypted must be set explicitly: EBS encryption-by-default is off at the
-# account level. No kmsKeyId, so the AWS-managed aws/ebs key is used.
+# - Not a default StorageClass on purpose: the Jenkins PVC must reference it
+#   explicitly via storageClassName.
+# - WaitForFirstConsumer delays volume creation until a Pod is scheduled, so
+#   the EBS volume is created in that Pod's Availability Zone (EBS volumes
+#   attach only to nodes in their own AZ).
+# - encrypted is explicit because EBS encryption-by-default is off on this
+#   AWS account; without kmsKeyId, the AWS-managed aws/ebs key is used.
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
