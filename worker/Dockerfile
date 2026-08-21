@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM python:3.12-slim-bookworm
+# Pin the exact base image by digest so all services use the same
+# immutable Python base.
+FROM python:3.12-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
 
 # Predictable Python runtime behavior
 ENV PYTHONDONTWRITEBYTECODE=1 \
