@@ -1,0 +1,17 @@
+# Full TaskFlow bootstrap scope.
+#
+# Runtime Secrets are intentionally excluded from Git and must be provisioned
+# separately before the application is deployed. Placeholder examples live in
+# k8s/examples/ and are not part of this Kustomization.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 00-namespace.yaml
+  - 10-serviceaccounts.yaml
+  - 20-configmap.yaml
+  - deployments
+  - 31-backend-service.yaml
+  - 41-worker-service.yaml
+  - 51-frontend-service.yaml
+  - 60-ingress.yaml

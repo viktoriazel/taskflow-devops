@@ -1,25 +1,27 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: frontend
+  name: worker
   namespace: devops-app
   labels:
-    app.kubernetes.io/name: frontend
+    app.kubernetes.io/name: worker
     app.kubernetes.io/part-of: taskflow
 spec:
   replicas: 2
+  # Keep a small, explicit rollback history for previous Deployment revisions.
+  revisionHistoryLimit: 5
   strategy:
     type: RollingUpdate
   selector:
     matchLabels:
-      app.kubernetes.io/name: frontend
+      app.kubernetes.io/name: worker
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: frontend
+        app.kubernetes.io/name: worker
         app.kubernetes.io/part-of: taskflow
     spec:
-      serviceAccountName: taskflow-frontend
+      serviceAccountName: taskflow-worker
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -32,35 +34,36 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels:
-              app.kubernetes.io/name: frontend
+              app.kubernetes.io/name: worker
       containers:
-        - name: frontend
-          image: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-frontend:v0.1.3
+        - name: worker
+          # Sentinel replaced by Kustomize with an exact digest-pinned image reference.
+          image: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker:IMAGE-NOT-SET
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8000
+            - containerPort: 6000
           env:
-            - name: BACKEND_URL
+            - name: AWS_REGION
               valueFrom:
                 configMapKeyRef:
                   name: taskflow-config
-                  key: BACKEND_URL
-            - name: SECRET_KEY
+                  key: AWS_REGION
+            - name: SNS_TOPIC_ARN
               valueFrom:
-                secretKeyRef:
-                  name: taskflow-frontend-secret
-                  key: SECRET_KEY
+                configMapKeyRef:
+                  name: taskflow-config
+                  key: SNS_TOPIC_ARN
           resources:
             requests:
               cpu: 50m
-              memory: 64Mi
+              memory: 96Mi
             limits:
               cpu: 250m
-              memory: 192Mi
+              memory: 256Mi
           readinessProbe:
             httpGet:
               path: /ready
-              port: 8000
+              port: 6000
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3
@@ -68,7 +71,7 @@ spec:
           livenessProbe:
             httpGet:
               path: /live
-              port: 8000
+              port: 6000
             initialDelaySeconds: 10
             periodSeconds: 15
             timeoutSeconds: 5

@@ -1,0 +1,28 @@
+# Shared Kustomization for the three application Deployments.
+#
+# Both the full bootstrap target and the minimal release target reference this
+# directory so they use the same Deployment manifests without duplication.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - 30-backend-deployment.yaml
+  - 40-worker-deployment.yaml
+  - 50-frontend-deployment.yaml
+
+# Bootstrap image baseline.
+#
+# Deployment manifests use the IMAGE-NOT-SET sentinel; this transformer
+# replaces it with digest-pinned references.
+images:
+  - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-backend
+    newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-backend
+    digest: sha256:b9135dc304bac6881738bdff05f7425fe3e873460ca33e110a76cddbd193db57
+
+  - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-frontend
+    newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-frontend
+    digest: sha256:70c322d07d63d3f6ce737c6bc434ff2259115f3eed314ca9c50d2d00d2e30775
+
+  - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker
+    newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker
+    digest: sha256:f2b91ee3aace23291c433b8754975bf32c5b73ef037d01001daf7fb936c5d69e

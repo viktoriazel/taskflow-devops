@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/part-of: taskflow
 spec:
   replicas: 2
+  # Keep a small, explicit rollback history for previous Deployment revisions.
+  revisionHistoryLimit: 5
   strategy:
     type: RollingUpdate
   selector:
@@ -35,7 +37,8 @@ spec:
               app.kubernetes.io/name: backend
       containers:
         - name: backend
-          image: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-backend:v0.1.3
+          # Sentinel replaced by Kustomize with an exact digest-pinned image reference.
+          image: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-backend:IMAGE-NOT-SET
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5000

@@ -1,0 +1,35 @@
+# Minimal TaskFlow release scope.
+#
+# Routine releases update only the three application Deployments. Bootstrap
+# resources such as Namespace, ServiceAccounts, ConfigMap, Services, Ingress
+# and runtime Secrets are intentionally outside this target.
+#
+# The release target reuses the shared Deployment manifests from
+# k8s/base/deployments and applies release-specific transformations on top.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base/deployments
+
+# Add release provenance to the Deployment and Pod template without changing
+# any other workload fields.
+patches:
+  - path: release-annotations.yaml
+
+# Release image baseline.
+#
+# Checked-in digests are the known-good baseline; a release run overrides them
+# with the digests verified by CI.
+images:
+  - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-backend
+    newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-backend
+    digest: sha256:b9135dc304bac6881738bdff05f7425fe3e873460ca33e110a76cddbd193db57
+
+  - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-frontend
+    newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-frontend
+    digest: sha256:70c322d07d63d3f6ce737c6bc434ff2259115f3eed314ca9c50d2d00d2e30775
+
+  - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker
+    newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker
+    digest: sha256:f2b91ee3aace23291c433b8754975bf32c5b73ef037d01001daf7fb936c5d69e

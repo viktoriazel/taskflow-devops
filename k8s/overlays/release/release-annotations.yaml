@@ -1,0 +1,56 @@
+# Release traceability patches for the three application Deployments.
+#
+# kubernetes.io/change-cause is stored on Deployment metadata for rollout
+# history. The taskflow.io/* provenance annotations live on the Pod template so
+# they remain associated with the image revision and are restored together
+# during a rollback.
+#
+# Checked-in values are the manual baseline; a release run overrides them.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: devops-app
+  annotations:
+    kubernetes.io/change-cause: "Pin images by digest and add release traceability via Kustomize; no application code change"
+spec:
+  template:
+    metadata:
+      annotations:
+        taskflow.io/git-commit: "ed4f0f568558130b942f5a14785befceb8ded39e"
+        taskflow.io/ci-build: "manual"
+        taskflow.io/image-tag: "git-ed4f0f5"
+        taskflow.io/deployed-by: "manual-kubectl"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: devops-app
+  annotations:
+    kubernetes.io/change-cause: "Pin images by digest and add release traceability via Kustomize; no application code change"
+spec:
+  template:
+    metadata:
+      annotations:
+        taskflow.io/git-commit: "ed4f0f568558130b942f5a14785befceb8ded39e"
+        taskflow.io/ci-build: "manual"
+        taskflow.io/image-tag: "git-ed4f0f5"
+        taskflow.io/deployed-by: "manual-kubectl"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: devops-app
+  annotations:
+    kubernetes.io/change-cause: "Pin images by digest and add release traceability via Kustomize; no application code change"
+spec:
+  template:
+    metadata:
+      annotations:
+        taskflow.io/git-commit: "ed4f0f568558130b942f5a14785befceb8ded39e"
+        taskflow.io/ci-build: "manual"
+        taskflow.io/image-tag: "git-ed4f0f5-r2"
+        taskflow.io/deployed-by: "manual-kubectl"
