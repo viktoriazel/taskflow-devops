@@ -1,0 +1,99 @@
+# Namespace-scoped Kubernetes permissions for the Jenkins controller, replacing
+# the broader RBAC the chart would generate (values.yaml sets rbac.create: false).
+# The controller receives only what it needs to manage Jenkins Agent Pods and to
+# read the JCasC reload ConfigMaps: no access to the application namespace, no
+# access to Secrets, no ClusterRole and no wildcards.
+#
+# The ServiceAccount itself is created by the chart (serviceAccount.name:
+# jenkins-controller in jenkins/values.yaml); this file only grants it rights.
+---
+# Everything the controller needs to run dynamic Agent Pods in this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-controller-schedule-agents
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: taskflow
+rules:
+  # Agent Pod lifecycle: create launches an agent, get/list/watch observe it and
+  # detect when it dies, delete terminates it and cleans up orphans.
+  # update, patch and deletecollection are not granted - nothing in the current
+  # setup needs them.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # Required for Pipeline steps that execute commands inside Agent Pod
+  # containers. Both verbs authorise the same exec call, so listing both does
+  # not widen the boundary.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["get", "create"]
+
+  # Read-only access to Agent Pod logs, for build diagnostics and the
+  # containerLog pipeline step.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Read-only diagnostics: without events the controller cannot report why an
+  # agent Pod failed to schedule or start.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-controller-schedule-agents
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: taskflow
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-controller-schedule-agents
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-controller
+    namespace: jenkins
+---
+# Read-only ConfigMap access for JCasC configuration reload. Kept separate from
+# the Role above so the two capabilities can be reasoned about, and revoked,
+# independently.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-controller-casc-reload
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: taskflow
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-controller-casc-reload
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: taskflow
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-controller-casc-reload
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-controller
+    namespace: jenkins

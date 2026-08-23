@@ -1,0 +1,18 @@
+# Dedicated namespace for the Jenkins control plane. It separates Jenkins
+# resources and namespace-scoped access controls (RBAC, NetworkPolicy) from the
+# TaskFlow application in devops-app.
+#
+# Managed from this manifest rather than `helm install --create-namespace` so
+# the namespace is an explicit reviewable repository resource whose lifecycle is
+# independent of the Jenkins Helm release.
+#
+# Pod Security Admission enforcement labels are deferred: the planned rootless
+# BuildKit agent requires seccompProfile: Unconfined, which baseline rejects.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: cicd
+    app.kubernetes.io/part-of: taskflow

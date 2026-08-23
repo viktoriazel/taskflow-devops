@@ -1,0 +1,199 @@
+# Jenkins controller configuration for the official jenkins/jenkins chart.
+#
+# Code-defined Helm overrides for the installation: every Helm value override
+# belongs here - no `--set` flags in the install script, nothing configured only
+# through the Jenkins UI. The chart version this file targets is pinned in
+# jenkins/chart.env (5.9.54, appVersion 2.568.2).
+
+controller:
+  # Pinned explicitly so the Jenkins version does not follow the chart's
+  # appVersion on a future chart upgrade.
+  image:
+    registry: docker.io
+    repository: jenkins/jenkins
+    tag: "2.568.2-jdk21"
+    # Reuses the image already on the node instead of re-pulling on every Pod
+    # start. A tag is not a content pin - only a digest guarantees identical
+    # bits, and this chart version cannot reference one.
+    pullPolicy: IfNotPresent
+
+  # Credentials come from the existing Kubernetes Secret jenkins-admin, created
+  # out of band and never stored in Git. createSecret must stay true: this chart
+  # still gates the projected credential mount on that flag, while existingSecret
+  # suppresses the chart's own generated password. The kubelet performs the
+  # mount, so the controller needs no Kubernetes Secret API permissions.
+  admin:
+    existingSecret: jenkins-admin
+    createSecret: true
+    userKey: jenkins-admin-user
+    passwordKey: jenkins-admin-password
+
+  # Direct plugins are pinned to exact versions and latest dependency resolution
+  # is disabled below, so repeated installs do not drift.
+  #
+  # github-branch-source is intentionally excluded: TaskFlow's job and webhook
+  # design does not need branch-source discovery, and the plugin surface is kept
+  # to what is actually used.
+  installPlugins:
+    - kubernetes:4540.v612369217f87
+    - workflow-aggregator:608.v67378e9d3db_1
+    - git:5.10.1
+    - github:1.47.0
+    - configuration-as-code:2117.vc05a_0b_e6b_f4e
+    - job-dsl:3732.v9a_c49a_61a_313
+    - credentials-binding:728.v902a_273b_8947
+    - lockable-resources:1539.v4db_b_fc1cc115
+    - junit:1424.vc64a_edde7777
+    - pipeline-utility-steps:3.810.va_7672d206740
+    - copyartifact:795.ve8e151429b_27
+    - timestamper:1.30
+    - ws-cleanup:0.49
+
+  # Chart default is true, which resolves dependencies to their latest versions
+  # at install time - two installs from this file would differ.
+  installLatestPlugins: false
+
+  # Inert while every plugin above carries a version; set so a carelessly edited
+  # list cannot start resolving to "latest".
+  installLatestSpecifiedPlugins: false
+
+  # Plugins already stored in the persistent Jenkins home are not overwritten on
+  # an ordinary upgrade. Pinned explicitly so a future chart default cannot
+  # change that behaviour silently.
+  overwritePlugins: false
+
+  # The chart's 50m/256Mi request under-reserves for a controller and lets a
+  # co-scheduled workload starve it. These values reserve enough capacity on the
+  # dedicated Jenkins node while leaving headroom for build agents. CPU may
+  # oversubscribe - contention costs throttling, not a killed controller.
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      cpu: 1500m
+      memory: 3Gi
+
+  # Jenkins runs as a non-root uid. fsGroup gives that uid ownership of the PVC,
+  # and OnRootMismatch avoids a recursive chown of the volume on every start.
+  podSecurityContextOverride:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+    fsGroup: 1000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+
+  # Non-root with a read-only root filesystem - every path Jenkins writes to is
+  # a mounted volume - and no Linux capabilities, which Jenkins does not need.
+  containerSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+  # startupProbe allows up to 5 minutes for plugin initialization on first boot
+  # and gates the other two, so neither needs an initial delay.
+  #
+  # Liveness and readiness use different endpoints on purpose:
+  # /whoAmI/api/json answers without authentication and is the cheapest proof
+  # that the controller is still responding; /login is what Service traffic
+  # reaches and returns 503 until Jenkins is ready to serve.
+  probes:
+    startupProbe:
+      httpGet:
+        path: /login
+        port: http
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 30
+    livenessProbe:
+      httpGet:
+        path: /whoAmI/api/json
+        port: http
+      initialDelaySeconds: 0
+      periodSeconds: 30
+      timeoutSeconds: 5
+      failureThreshold: 5
+    readinessProbe:
+      httpGet:
+        path: /login
+        port: http
+      initialDelaySeconds: 0
+      periodSeconds: 10
+      timeoutSeconds: 5
+      successThreshold: 1
+      failureThreshold: 3
+
+  # The JCasC reload containers ship with neither resources nor a full security
+  # context; these keys apply explicit resources and the same hardening to both.
+  sidecars:
+    configAutoReload:
+      resources:
+        requests:
+          cpu: 20m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+      containerSecurityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+
+  # The nodeSelector places the controller on the dedicated Jenkins node; the
+  # toleration lets it schedule onto that node's workload=jenkins:NoSchedule taint.
+  nodeSelector:
+    workload: jenkins
+
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: jenkins
+      effect: NoSchedule
+
+# The controller runs under its own named identity rather than one derived from
+# the release name, so it stays distinguishable from the agent identities in
+# RBAC and audit logs.
+serviceAccount:
+  create: true
+  name: jenkins-controller
+
+  # Required: the controller uses this token to reach the Kubernetes API and
+  # manage dynamic agent Pods.
+  automountServiceAccountToken: true
+
+# The chart's built-in RBAC is broader than the controller needs. A narrower
+# Role lives in jenkins/rbac/controller.yaml and is applied before the release.
+rbac:
+  create: false
+
+# Jenkins home on its own EBS volume: plugins, job configuration, the
+# credentials store and build history must survive Pod replacement.
+persistence:
+  enabled: true
+
+  # Named explicitly so Jenkins always uses taskflow-gp3
+  # (jenkins/storageclass-gp3.yaml) rather than whichever StorageClass the
+  # cluster happens to treat as default.
+  storageClass: taskflow-gp3
+
+  # EBS volumes attach to one node at a time; ReadWriteOnce is what they support
+  # and all a single controller Pod needs.
+  accessMode: ReadWriteOnce
+
+  # Comfortable room for the plugin set, build history and archived artifacts.
+  # gp3 can be expanded in place (allowVolumeExpansion: true) but never shrunk.
+  size: 20Gi
