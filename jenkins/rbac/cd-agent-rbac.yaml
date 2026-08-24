@@ -1,0 +1,81 @@
+# Kubernetes deployment permissions for the Jenkins CD agent.
+#
+# Namespace-scoped to devops-app: no ClusterRole, no cluster-scoped grant, no
+# wildcard, no Secrets access, and no create or delete on any resource. Write
+# access is limited to patching the three application Deployments; every other
+# permission is read-only and serves rollout, verification and diagnostics.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-cd-agent-release
+  namespace: devops-app
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: cd-agent
+    app.kubernetes.io/part-of: taskflow
+rules:
+  # The entire write surface of CD, restricted by name to the three TaskFlow
+  # Deployments.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["backend", "frontend", "worker"]
+    verbs: ["get", "patch"]
+
+  # Broad permission, justified: resourceNames cannot restrict collection verbs,
+  # so list/watch are namespace-wide. Both are read-only.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list", "watch"]
+
+  # Rollback and rollout history resolve revisions through the Deployment's
+  # ReplicaSets. Read-only.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["list"]
+
+  # Rollout verification and failure diagnostics. Read-only.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Diagnostics. Both API groups serve the same events; which one a client uses
+  # depends on the kubectl version.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["list"]
+
+  # Post-release inspection of the application Services and Ingress. Read-only;
+  # reachability is verified separately by the smoke test.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["list"]
+---
+# Binds the devops-app Role to the CD agent identity, which lives in the jenkins
+# namespace. The grant still applies only to resources in devops-app.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-cd-agent-release
+  namespace: devops-app
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: cd-agent
+    app.kubernetes.io/part-of: taskflow
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-cd-agent-release
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-cd-agent
+    namespace: jenkins

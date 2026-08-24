@@ -1,0 +1,71 @@
+# Jenkins system configuration as code.
+#
+# Supplied to the Helm release from this file (see scripts/jenkins-common.sh),
+# not pasted into values.yaml, so it stays reviewable YAML that an editor and a
+# linter can read. jenkins/values.yaml sets controller.JCasC.defaultConfig to
+# false, which means this file - not the chart's built-in defaults - is the
+# definition of the controller's system settings.
+#
+# No credential value appears here. ${chart-admin-username} and
+# ${chart-admin-password} are resolved at startup by the Configuration as Code
+# plugin from the files the kubelet projects into /run/secrets/additional out of
+# the jenkins-admin Secret, which is created out of band and never committed.
+
+jenkins:
+  # Jenkins' own user database, seeded with the single administrator from the
+  # Kubernetes Secret. Signup is closed, so this realm cannot grow a second
+  # account by itself.
+  securityRealm:
+    local:
+      allowsSignup: false
+      enableCaptcha: false
+      users:
+        - id: "${chart-admin-username}"
+          name: "Jenkins Admin"
+          password: "${chart-admin-password}"
+
+  # Basic permissions: authentication is required for everything. Anonymous
+  # read is off, so an unauthenticated caller sees nothing - including build
+  # history, job configuration and console output.
+  #
+  # This does not block the GitHub webhook added later: that endpoint is an
+  # unprotected root action by design and is authenticated by its own shared
+  # secret rather than by a Jenkins user.
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+  # The controller orchestrates and never executes build or deploy work.
+  # Zero executors is the mechanism, not a recommendation: with no executor the
+  # controller cannot accept a workload even if a job asked it to, so every
+  # build has to wait for a dynamic Agent Pod.
+  numExecutors: 0
+
+  # No label on the controller, so nothing can be pinned to it by label either.
+  labelString: ""
+  mode: NORMAL
+
+  disableRememberMe: false
+  projectNamingStrategy: "standard"
+
+  # Job descriptions are rendered as plain text; HTML from a build or a job
+  # description is never interpreted by the browser.
+  markupFormatter: "plainText"
+
+  # Inbound port that Agent Pods connect back to, matching the jenkins-agent
+  # Service the chart creates.
+  slaveAgentPort: 50000
+
+security:
+  apiToken:
+    # Legacy, non-expiring API tokens cannot be created, and a token is not
+    # generated automatically when a user is created.
+    creationOfLegacyTokenEnabled: false
+    tokenGenerationOnCreationEnabled: false
+    usageStatisticsEnabled: true
+
+unclassified:
+  # The canonical internal Jenkins URL. The controller stays cluster-internal;
+  # operators reach the UI through kubectl port-forward.
+  location:
+    url: "http://jenkins.jenkins.svc.cluster.local:8080/"

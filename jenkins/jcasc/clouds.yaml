@@ -1,0 +1,459 @@
+# Kubernetes cloud and the two dynamic Agent Pod templates.
+#
+# Every build runs on an ephemeral Agent Pod that the Kubernetes plugin creates
+# and deletes with the build; the controller carries zero executors
+# (jenkins/jcasc/system.yaml) and cannot run build or deploy work itself.
+#
+# Pods are declared as raw Kubernetes YAML because the plugin's typed container
+# fields cannot express a per-container securityContext, tolerations or extra
+# volumes. Every image is pinned by digest: a tag can be repointed.
+
+jenkins:
+  clouds:
+    - kubernetes:
+        name: "kubernetes"
+
+        # In-cluster API access using the controller's own ServiceAccount token.
+        # No kubeconfig and no static credential: credentialsId stays empty.
+        serverUrl: "https://kubernetes.default"
+        credentialsId: ""
+        skipTlsVerify: false
+
+        # Agent Pods are created only here. The controller's Role is scoped to
+        # this namespace (jenkins/rbac/controller.yaml), so it could not create
+        # a Pod anywhere else even if this were changed.
+        namespace: "jenkins"
+
+        # How an agent reaches back. Service DNS only - nothing is published
+        # outside the cluster.
+        jenkinsUrl: "http://jenkins.jenkins.svc.cluster.local:8080/"
+        jenkinsTunnel: "jenkins-agent.jenkins.svc.cluster.local:50000"
+
+        # Ceiling on concurrently provisioned Agent Pods, sized for the single
+        # dedicated Jenkins node rather than left at the plugin default.
+        containerCapStr: "4"
+        maxRequestsPerHostStr: "32"
+
+        connectTimeout: "10"
+        readTimeout: "20"
+        retentionTimeout: "5"
+        waitForPodSec: "600"
+
+        usageRestricted: false
+        addMasterProxyEnvVars: false
+
+        # The plugin's own PSS helper is not used: this file sets an explicit
+        # securityContext on every Pod and container instead.
+        restrictedPssSecurityContext: false
+
+        # Applied to every agent Pod, so agents are identifiable in kubectl
+        # output and distinguishable from the controller.
+        podLabels:
+          - key: "app.kubernetes.io/name"
+            value: "jenkins-agent"
+          - key: "app.kubernetes.io/part-of"
+            value: "taskflow"
+          - key: "app.kubernetes.io/managed-by"
+            value: "jenkins"
+
+        templates:
+          # ------------------------------------------------------------------
+          # CI agent - test, build, scan, push. No Kubernetes deploy rights.
+          # ------------------------------------------------------------------
+          - name: "taskflow-ci"
+            namespace: "jenkins"
+            label: "taskflow-ci"
+
+            # Runs as jenkins-ci-agent: no Role, no RoleBinding, and the SA sets
+            # automountServiceAccountToken: false. ECR access arrives separately
+            # through the EKS Pod Identity association.
+            serviceAccount: "jenkins-ci-agent"
+
+            # Ephemeral by construction: the Pod is deleted when the build ends
+            # and is never reused while idle.
+            podRetention: Never
+            idleMinutes: 0
+
+            # One CI Pod at a time. The dedicated node has room for one CI and
+            # one CD agent alongside the controller; a second CI Pod would not
+            # fit its memory requests.
+            instanceCap: 1
+            slaveConnectTimeoutStr: "300"
+            nodeUsageMode: "NORMAL"
+            showRawYaml: true
+
+            # Temporary workspace: an emptyDir that the kubelet destroys with
+            # the Pod. The plugin mounts it into every container of the Pod.
+            workspaceVolume:
+              emptyDirWorkspaceVolume:
+                memory: false
+
+            yamlMergeStrategy: merge
+            inheritYamlMergeStrategy: false
+
+            yaml: |
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                labels:
+                  app.kubernetes.io/component: ci-agent
+              spec:
+                # CI never talks to the Kubernetes API. With no ServiceAccount
+                # token mounted it cannot authenticate to it at all, so "CI has
+                # no deploy permissions" holds at the credential layer and not
+                # only through the absence of a RoleBinding.
+                automountServiceAccountToken: false
+
+                # The dedicated Jenkins node carries workload=jenkins:NoSchedule,
+                # so build work never lands on an application node.
+                nodeSelector:
+                  workload: jenkins
+                tolerations:
+                  - key: workload
+                    operator: Equal
+                    value: jenkins
+                    effect: NoSchedule
+
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  fsGroup: 1000
+                  seccompProfile:
+                    type: RuntimeDefault
+
+                containers:
+                  # The plugin injects JENKINS_SECRET, JENKINS_AGENT_NAME and
+                  # the connection URL into the container named jnlp.
+                  - name: jnlp
+                    image: jenkins/inbound-agent@sha256:6dbeabd484bb3926293de0b337117f7ad8bb2c0ba1a425b3e34e3d3983b5e1f9
+                    resources:
+                      requests: {cpu: 100m, memory: 256Mi}
+                      limits:   {cpu: 500m, memory: 512Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                      # Not read-only: the remoting agent writes into its home
+                      # directory outside the workspace mount.
+                      readOnlyRootFilesystem: false
+
+                  # Lint and tests, on the same digest the three service
+                  # Dockerfiles build from. Dependencies go into a venv in the
+                  # ephemeral workspace, so no build inherits another's.
+                  - name: python
+                    image: python:3.12-slim-bookworm@sha256:a116514e19457bcb7af7efe9c3dd0b9b71e85b317694e7882a1c52aa15a78134
+                    command: ["cat"]
+                    tty: true
+                    env:
+                      # The Jenkins workspace, which is the emptyDir the plugin
+                      # mounts into every container of this Pod.
+                      - {name: HOME,                        value: /home/jenkins/agent}
+                      - {name: TMPDIR,                      value: /tmp}
+                      - {name: PIP_DISABLE_PIP_VERSION_CHECK, value: "1"}
+                    resources:
+                      requests: {cpu: 100m, memory: 256Mi}
+                      limits:   {cpu: 500m, memory: 1Gi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                    volumeMounts:
+                      - {name: python-tmp, mountPath: /tmp}
+
+                  # Rootless image builder: no Docker socket, no hostPath, not
+                  # privileged. Unconfined seccomp, allowPrivilegeEscalation and
+                  # SETUID/SETGID are the measured minimum for the user namespace
+                  # and for newuidmap, and are scoped to this container alone.
+                  # The process still holds no effective capability.
+                  - name: buildkit
+                    image: moby/buildkit@sha256:504731e577c20559c00f968f33219f30115e70be29ab96728d1d06e963fc494b
+                    args:
+                      - --addr
+                      - unix:///run/user/1000/buildkit/buildkitd.sock
+                      # A buildkitd flag rather than the broader alternative,
+                      # procMount: Unmasked, which would expose the host's
+                      # masked paths to the agent.
+                      - --oci-worker-no-process-sandbox
+                    resources:
+                      requests: {cpu: 300m, memory: 1Gi}
+                      limits:   {cpu: 1500m, memory: 2Gi}
+                    securityContext:
+                      allowPrivilegeEscalation: true
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                        add: ["SETUID", "SETGID"]
+                      seccompProfile:
+                        type: Unconfined
+                    volumeMounts:
+                      - {name: buildkit-state,  mountPath: /home/user/.local/share/buildkit}
+                      - {name: buildkit-run,    mountPath: /run/user/1000}
+                      - {name: buildkit-tmpdir, mountPath: /home/user/.local/tmp}
+                      - {name: buildkit-tmp,    mountPath: /tmp}
+                      - {name: buildkit-docker, mountPath: /home/user/.docker}
+
+                  - name: trivy
+                    image: public.ecr.aws/aquasecurity/trivy@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+                    command: ["cat"]
+                    tty: true
+                    env:
+                      - {name: HOME,            value: /trivy-home}
+                      - {name: TMPDIR,          value: /tmp}
+                      - {name: TRIVY_CACHE_DIR, value: /trivy-cache}
+                    resources:
+                      requests: {cpu: 100m, memory: 512Mi}
+                      limits:   {cpu: 1000m, memory: 1Gi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                    volumeMounts:
+                      - {name: trivy-home,  mountPath: /trivy-home}
+                      - {name: trivy-cache, mountPath: /trivy-cache}
+                      - {name: trivy-tmp,   mountPath: /tmp}
+
+                  - name: skopeo
+                    image: quay.io/skopeo/stable@sha256:17da3ac5cadf2b27a3dcf7dea857c4cea558ef757641725fc0eec560030057b3
+                    command: ["cat"]
+                    tty: true
+                    env:
+                      - {name: HOME,   value: /skopeo-home}
+                      - {name: TMPDIR, value: /tmp}
+                    resources:
+                      requests: {cpu: 50m, memory: 128Mi}
+                      limits:   {cpu: 500m, memory: 512Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                    volumeMounts:
+                      - {name: skopeo-home, mountPath: /skopeo-home}
+                      - {name: skopeo-tmp,  mountPath: /tmp}
+                      - {name: ecr-auth,    mountPath: /ecr-auth}
+
+                  # Obtains the ECR login and writes the registry auth material
+                  # to the memory-backed ecr-auth volume. That volume sits
+                  # outside the workspace, so an archiveArtifacts step cannot
+                  # pick it up, and only this container and skopeo mount it.
+                  - name: aws
+                    image: public.ecr.aws/aws-cli/aws-cli@sha256:6a1305a37e63914356f9d1808f3349c06a650cbd6e7c777f5dc4b44d630d6b39
+                    command: ["cat"]
+                    tty: true
+                    env:
+                      - {name: HOME,       value: /aws-home}
+                      - {name: TMPDIR,     value: /tmp}
+                      - {name: AWS_REGION, value: eu-north-1}
+                    resources:
+                      requests: {cpu: 50m, memory: 128Mi}
+                      limits:   {cpu: 500m, memory: 256Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                    volumeMounts:
+                      - {name: aws-home, mountPath: /aws-home}
+                      - {name: aws-tmp,  mountPath: /tmp}
+                      - {name: ecr-auth, mountPath: /ecr-auth}
+
+                volumes:
+                  # Writable paths for containers whose root filesystem is
+                  # read-only; the venv lives in the workspace, not here.
+                  - {name: python-tmp,      emptyDir: {}}
+                  - {name: buildkit-state,  emptyDir: {}}
+                  - {name: buildkit-run,    emptyDir: {}}
+                  - {name: buildkit-tmpdir, emptyDir: {}}
+                  - {name: buildkit-tmp,    emptyDir: {}}
+                  - {name: buildkit-docker, emptyDir: {}}
+                  - {name: trivy-home,      emptyDir: {}}
+                  - {name: trivy-cache,     emptyDir: {}}
+                  - {name: trivy-tmp,       emptyDir: {}}
+                  - {name: skopeo-home,     emptyDir: {}}
+                  - {name: skopeo-tmp,      emptyDir: {}}
+                  - {name: aws-home,        emptyDir: {}}
+                  - {name: aws-tmp,         emptyDir: {}}
+                  # Memory-backed, so registry auth material never reaches the
+                  # node's disk.
+                  - name: ecr-auth
+                    emptyDir:
+                      medium: Memory
+                      sizeLimit: 1Mi
+
+          # ------------------------------------------------------------------
+          # CD agent - deploy an image CI already built. Never builds.
+          # ------------------------------------------------------------------
+          - name: "taskflow-cd"
+            namespace: "jenkins"
+            label: "taskflow-cd"
+
+            # Runs as jenkins-cd-agent: one namespaced Role in devops-app
+            # (jenkins/rbac/cd-agent-rbac.yaml) and read-only ECR metadata
+            # access through EKS Pod Identity. No cluster-admin, no kubeconfig.
+            serviceAccount: "jenkins-cd-agent"
+
+            podRetention: Never
+            idleMinutes: 0
+            instanceCap: 1
+            slaveConnectTimeoutStr: "300"
+            nodeUsageMode: "NORMAL"
+            showRawYaml: true
+
+            workspaceVolume:
+              emptyDirWorkspaceVolume:
+                memory: false
+
+            yamlMergeStrategy: merge
+            inheritYamlMergeStrategy: false
+
+            yaml: |
+              apiVersion: v1
+              kind: Pod
+              metadata:
+                labels:
+                  app.kubernetes.io/component: cd-agent
+              spec:
+                # The Kubernetes API token is not mounted Pod-wide: it is
+                # projected below into the kubectl container only, so the other
+                # three receive no Kubernetes API credential.
+                automountServiceAccountToken: false
+
+                nodeSelector:
+                  workload: jenkins
+                tolerations:
+                  - key: workload
+                    operator: Equal
+                    value: jenkins
+                    effect: NoSchedule
+
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  fsGroup: 1000
+                  seccompProfile:
+                    type: RuntimeDefault
+
+                containers:
+                  - name: jnlp
+                    image: jenkins/inbound-agent@sha256:6dbeabd484bb3926293de0b337117f7ad8bb2c0ba1a425b3e34e3d3983b5e1f9
+                    resources:
+                      requests: {cpu: 100m, memory: 256Mi}
+                      limits:   {cpu: 500m, memory: 512Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                      readOnlyRootFilesystem: false
+
+                  # Applies the release and watches the rollout. The only
+                  # container in this Pod that receives a Kubernetes API token.
+                  - name: kubectl
+                    image: alpine/kubectl@sha256:9ccd823647622b620dce092d0f1406b8b41d152ce08ac963e3d4683770b14dfd
+                    command: ["cat"]
+                    tty: true
+                    env:
+                      - {name: HOME,   value: /tmp}
+                      - {name: TMPDIR, value: /tmp}
+                    resources:
+                      requests: {cpu: 50m, memory: 128Mi}
+                      limits:   {cpu: 500m, memory: 512Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                    volumeMounts:
+                      - {name: kubectl-tmp, mountPath: /tmp}
+                      - name: kube-api-access
+                        mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                        readOnly: true
+
+                  # Rewrites the release overlay's image digests in the shared
+                  # workspace only. It makes no Kubernetes API calls and
+                  # receives no Kubernetes API ServiceAccount token.
+                  - name: kustomize
+                    image: registry.k8s.io/kustomize/kustomize@sha256:899fcd3bc898160e62bcaf82932b0cb29ba38d16272353db2e7acbba82129429
+                    command: ["cat"]
+                    tty: true
+                    env:
+                      - {name: HOME,   value: /tmp}
+                      - {name: TMPDIR, value: /tmp}
+                    resources:
+                      requests: {cpu: 50m, memory: 128Mi}
+                      limits:   {cpu: 500m, memory: 256Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                    volumeMounts:
+                      - {name: kustomize-tmp, mountPath: /tmp}
+
+                  # Confirms in ECR that the image CI produced really exists
+                  # before anything is deployed. Read-only metadata access.
+                  - name: aws
+                    image: public.ecr.aws/aws-cli/aws-cli@sha256:6a1305a37e63914356f9d1808f3349c06a650cbd6e7c777f5dc4b44d630d6b39
+                    command: ["cat"]
+                    tty: true
+                    env:
+                      - {name: HOME,       value: /aws-home}
+                      - {name: TMPDIR,     value: /tmp}
+                      - {name: AWS_REGION, value: eu-north-1}
+                    resources:
+                      requests: {cpu: 50m, memory: 128Mi}
+                      limits:   {cpu: 500m, memory: 256Mi}
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+                      seccompProfile:
+                        type: RuntimeDefault
+                    volumeMounts:
+                      - {name: aws-home, mountPath: /aws-home}
+                      - {name: aws-tmp,  mountPath: /tmp}
+
+                volumes:
+                  - {name: kubectl-tmp,   emptyDir: {}}
+                  - {name: kustomize-tmp, emptyDir: {}}
+                  - {name: aws-home,      emptyDir: {}}
+                  - {name: aws-tmp,       emptyDir: {}}
+                  # The same three sources the kubelet would project for an
+                  # automounted token, declared here so the mount can be limited
+                  # to one container instead of the whole Pod.
+                  - name: kube-api-access
+                    projected:
+                      sources:
+                        - serviceAccountToken:
+                            path: token
+                            expirationSeconds: 3600
+                        - configMap:
+                            name: kube-root-ca.crt
+                            items:
+                              - key: ca.crt
+                                path: ca.crt
+                        - downwardAPI:
+                            items:
+                              - path: namespace
+                                fieldRef:
+                                  fieldPath: metadata.namespace

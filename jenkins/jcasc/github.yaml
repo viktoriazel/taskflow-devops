@@ -1,0 +1,12 @@
+# GitHub plugin configuration as code.
+#
+# The configs list is empty on purpose: with no GitHub server configuration
+# Jenkins does not register or modify webhooks through the GitHub API, so this
+# installation needs no GitHub API token.
+#
+# Webhook secret configuration is added only once its Jenkins credential exists.
+# This file would then carry the credential id alone, never the secret value.
+
+unclassified:
+  githubpluginconfig:
+    configs: []

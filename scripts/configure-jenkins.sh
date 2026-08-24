@@ -4,8 +4,8 @@
 #
 # The division of labour against install-jenkins.sh:
 #   install    creates the initial Jenkins installation and its prerequisites.
-#   configure  reconciles an existing release with jenkins/values.yaml and
-#              jenkins/rbac/controller.yaml.
+#   configure  reconciles an existing release, the controller and agent RBAC,
+#              and JCasC with this repository.
 #
 # Reconciliation refuses to create a missing Helm release: a first installation
 # is install-jenkins.sh's job, never a silent side effect of this script.
@@ -25,9 +25,9 @@ usage() {
     cat <<EOF
 Usage: $(basename "${BASH_SOURCE[0]}") [--dry-run] [-h|--help]
 
-Reapplies this repository's Jenkins configuration to an existing release:
-the controller RBAC and a helm upgrade from the pinned chart with
-jenkins/values.yaml.
+Reapplies this repository's Jenkins configuration to an existing release: the
+controller and agent identities and permissions, the JCasC files, and a helm
+upgrade from the pinned chart with jenkins/values.yaml.
 
 Options:
   --dry-run   Run every check and render the upgrade without changing the
@@ -42,12 +42,11 @@ Environment:
 
 Exit codes: 0 ok, 1 error, 2 usage.
 
-Note on plugins: changing a pinned plugin version in jenkins/values.yaml
-updates the desired configuration, but a plugin already written to the
-persistent Jenkins home is not replaced by an upgrade - values.yaml sets
-overwritePlugins: false, which is what keeps ordinary restarts stable.
-Reconciling plugin pins on an existing volume is a destructive state change
-and is not performed by this script.
+Note on plugins: values.yaml sets overwritePlugins: false, so the persistent
+plugin directory is never cleared. It is not frozen either. When an upgrade
+restarts the controller, a pinned version newer than the one on the volume
+replaces it, while equal and older versions are left alone. Moving a pin
+backwards therefore does not take effect here and needs its own procedure.
 EOF
 }
 
@@ -68,7 +67,8 @@ step "Preflight"
 
 require_commands kubectl helm sha256sum
 load_chart_env
-require_repo_files "$VALUES_FILE" "$RBAC_MANIFEST"
+require_repo_files "$VALUES_FILE" "$RBAC_MANIFEST" "${AGENT_RBAC_MANIFESTS[@]}"
+jcasc_set_file_args
 
 info "repo root: ${REPO_ROOT}"
 info "release:   ${JENKINS_RELEASE_NAME} (namespace ${JENKINS_NAMESPACE})"
@@ -113,6 +113,25 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# Agent identities and permissions
+#
+# Reconciled on every run, so a change to an agent ServiceAccount or to the CD
+# Role reaches the cluster through this script and not by hand.
+# --------------------------------------------------------------------------
+
+step "Agent RBAC"
+
+require_app_namespace
+
+for manifest in "${AGENT_RBAC_MANIFESTS[@]}"; do
+    if [[ "$DRY_RUN" == true ]]; then
+        kubectl apply --dry-run=client -f "$manifest"
+    else
+        kubectl apply -f "$manifest"
+    fi
+done
+
+# --------------------------------------------------------------------------
 # Chart artifact
 #
 # The pinned chart artifact is downloaded and SHA256-verified on every
@@ -133,6 +152,7 @@ helm_args=(
     upgrade "$JENKINS_RELEASE_NAME" "$JENKINS_CHART_TGZ"
     --namespace "$JENKINS_NAMESPACE"
     --values "$VALUES_FILE"
+    "${JCASC_SET_FILE_ARGS[@]}"
     --wait
     --timeout "$HELM_TIMEOUT"
 )

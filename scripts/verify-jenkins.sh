@@ -2,9 +2,10 @@
 #
 # verify-jenkins.sh - check that the running Jenkins matches this repository.
 #
-# Read-only. Every check is a kubectl or helm query; nothing is created,
-# changed or deleted. Exits non-zero if any check fails, so it can gate a
-# pipeline or a manual install.
+# Read-only. Every check is a kubectl or helm query, or a command that only
+# reads inside the controller container; nothing is created, changed or
+# deleted. Exits non-zero if any check fails, so it can gate a pipeline or a
+# manual install.
 #
 # No credential value is ever printed or exposed. The admin Secret is checked
 # for the presence and non-emptiness of its required keys only.
@@ -287,10 +288,11 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# Plugin pinning
+# Plugin pinning and load state
 #
-# Read from the ConfigMap the chart renders, so this reflects what the
-# controller was actually told to install.
+# The pinned list is read from the ConfigMap the chart renders, so it reflects
+# what the controller was actually told to install; the load checks then
+# confirm the controller is really running that set.
 # --------------------------------------------------------------------------
 
 step "Plugins"
@@ -310,6 +312,241 @@ if [[ -n "$plugins" ]]; then
     fi
 else
     bad "plugin list not found in ConfigMap '${JENKINS_RELEASE_NAME}'"
+fi
+
+# A pinned plugin can sit on the volume and still not be running: Jenkins
+# refuses to load one whose dependencies are unmet, carries on serving, and
+# every other check here stays green while the feature is silently gone. The
+# three checks below close that gap.
+
+installed_plugins="$(kq exec "$POD" -n "$JENKINS_NAMESPACE" -c jenkins -- \
+    sh -c 'ls /var/jenkins_home/plugins/*.jpi 2>/dev/null | sed "s|.*/||; s|[.]jpi$||"')"
+
+if [[ -z "$installed_plugins" ]]; then
+    bad "could not list the plugins installed on '${POD}'"
+else
+    missing=()
+    while read -r line; do
+        [[ -n "$line" ]] || continue
+        grep -qxF "${line%%:*}" <<< "$installed_plugins" || missing+=("${line%%:*}")
+    done <<< "$plugins"
+
+    if (( ${#missing[@]} == 0 )); then
+        ok "every pinned plugin is installed on the controller"
+    else
+        bad "pinned but not installed: ${missing[*]}"
+    fi
+
+    # Named explicitly because these are not all pinned directly - most arrive
+    # as dependencies - and because a Declarative job that finds the suite
+    # missing finishes green without running a single stage.
+    missing=()
+    for plugin in workflow-aggregator pipeline-model-definition \
+                  pipeline-model-extensions pipeline-model-api \
+                  workflow-job pipeline-stage-step; do
+        grep -qxF "$plugin" <<< "$installed_plugins" || missing+=("$plugin")
+    done
+
+    if (( ${#missing[@]} == 0 )); then
+        ok "Pipeline suite installed"
+    else
+        bad "Pipeline plugins not installed: ${missing[*]}"
+    fi
+fi
+
+# Jenkins logs one SEVERE per plugin it could not load, naming the plugin and
+# the dependency that is unsatisfied. Anything matched here means the set on the
+# volume is internally inconsistent, whichever files are present.
+failed_plugins="$(kubectl logs "$POD" -n "$JENKINS_NAMESPACE" -c jenkins 2>/dev/null \
+    | sed -n 's/.*Failed Loading plugin .*(\([A-Za-z0-9_.-]*\)).*/\1/p' | sort -u)"
+
+if [[ -z "$failed_plugins" ]]; then
+    ok "no plugin failed to load on the running controller"
+else
+    bad "plugins failed to load: $(tr '\n' ' ' <<< "$failed_plugins")"
+fi
+
+# --------------------------------------------------------------------------
+# Agent identities
+# --------------------------------------------------------------------------
+
+step "Agent identities"
+
+expect_eq "ServiceAccount jenkins-ci-agent automountServiceAccountToken" "false" \
+    "$(kq get serviceaccount jenkins-ci-agent -n "$JENKINS_NAMESPACE" -o jsonpath='{.automountServiceAccountToken}')"
+# Both agent ServiceAccounts default to no API token. CD still reaches the API:
+# its Pod template projects the token explicitly into the kubectl container,
+# which does not depend on this field.
+expect_eq "ServiceAccount jenkins-cd-agent automountServiceAccountToken" "false" \
+    "$(kq get serviceaccount jenkins-cd-agent -n "$JENKINS_NAMESPACE" -o jsonpath='{.automountServiceAccountToken}')"
+
+# Lists the bindings whose subjects include one agent ServiceAccount. Matching
+# happens on kind, namespace and name inside the template, so a hit cannot come
+# from an unrelated field that merely contains the name, and a subject is not
+# missed because it is not the first in its list.
+#
+# Single-quoted segments: the $ variables belong to the Go template, not to the
+# shell.
+# shellcheck disable=SC2016
+binding_subjects_template() {
+    printf '%s' '{{range .items}}{{$name := .metadata.name}}{{$ns := .metadata.namespace}}{{range .subjects}}{{if eq .kind "ServiceAccount"}}{{if eq .namespace "'"$JENKINS_NAMESPACE"'"}}{{if eq .name "'"$1"'"}}{{$ns}}/{{$name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}{{end}}'
+}
+
+# Asserts that no binding of the given kind grants anything to the given
+# ServiceAccount. Run without kq: a query that could not run at all must fail
+# the check, never look like a clean result.
+assert_no_binding() {
+    local sa="$1" kind="$2" found
+    if ! found="$(kubectl get "$kind" --all-namespaces \
+            -o go-template="$(binding_subjects_template "$sa")" 2>/dev/null)"; then
+        bad "could not list ${kind}s - grants to ${sa} were not verified"
+    elif [[ -n "$found" ]]; then
+        bad "${kind}(s) grant permissions to ${sa}: ${found}"
+    else
+        ok "no ${kind} grants anything to ${sa}"
+    fi
+}
+
+# The CI pipeline must hold no Kubernetes permissions at all, of either kind.
+for kind in rolebinding clusterrolebinding; do
+    assert_no_binding jenkins-ci-agent "$kind"
+done
+
+# --------------------------------------------------------------------------
+# CD permissions
+#
+# The Role and its RoleBinding are read back from the cluster rather than from
+# the repository, so this reports what is actually in force.
+# --------------------------------------------------------------------------
+
+step "CD agent permissions"
+
+if cd_rules="$(kubectl get role jenkins-cd-agent-release -n "$APP_NAMESPACE" -o json 2>/dev/null)"; then
+    ok "Role exists: jenkins-cd-agent-release in ${APP_NAMESPACE}"
+
+    for forbidden in secrets '"\*"'; do
+        if printf '%s' "$cd_rules" | grep -q "$forbidden"; then
+            bad "CD Role references a forbidden resource or wildcard: ${forbidden}"
+        else
+            ok "CD Role contains no ${forbidden}"
+        fi
+    done
+
+    for verb in create update delete deletecollection; do
+        if printf '%s' "$cd_rules" | grep -q "\"${verb}\""; then
+            bad "CD Role grants '${verb}'"
+        else
+            ok "CD Role does not grant '${verb}'"
+        fi
+    done
+
+    # The write surface itself, rather than a list of verbs that must be absent.
+    # Every rule is reduced to one line and the rules granting anything beyond
+    # get/list/watch are isolated: exactly one is expected, and it must be the
+    # patch on the three named Deployments. Verbs and names are sorted, so the
+    # comparison does not depend on the order they were written in.
+    # shellcheck disable=SC2016
+    rule_tpl='{{range .rules}}{{range $i, $g := .apiGroups}}{{if $i}},{{end}}{{if eq $g ""}}core{{else}}{{$g}}{{end}}{{end}};{{range $i, $r := .resources}}{{if $i}},{{end}}{{$r}}{{end}};{{range $i, $n := .resourceNames}}{{if $i}},{{end}}{{$n}}{{end}};{{range $i, $v := .verbs}}{{if $i}},{{end}}{{$v}}{{end}}{{"\n"}}{{end}}'
+
+    sorted_csv() {
+        local joined
+        joined="$(tr ',' '\n' <<< "$1" | sort | tr '\n' ',')"
+        printf '%s' "${joined%,}"
+    }
+
+    if ! cd_rule_lines="$(kubectl get role jenkins-cd-agent-release -n "$APP_NAMESPACE" \
+            -o go-template="$rule_tpl" 2>/dev/null)"; then
+        bad "could not read the rules of the CD Role - its write surface was not verified"
+    else
+        write_rules=()
+        while IFS=';' read -r groups resources names verbs; do
+            [[ -n "$verbs" ]] || continue
+            IFS=',' read -ra rule_verbs <<< "$verbs"
+            for verb in "${rule_verbs[@]}"; do
+                case "$verb" in
+                    get|list|watch) ;;
+                    *) write_rules+=("${groups};${resources};$(sorted_csv "$names");$(sorted_csv "$verbs")")
+                       break ;;
+                esac
+            done
+        done <<< "$cd_rule_lines"
+
+        if (( ${#write_rules[@]} == 1 )); then
+            expect_eq "CD Role write surface" \
+                "apps;deployments;backend,frontend,worker;get,patch" "${write_rules[0]}"
+        else
+            bad "CD Role has ${#write_rules[@]} rules granting a write verb, expected exactly 1: ${write_rules[*]}"
+        fi
+    fi
+else
+    bad "Role 'jenkins-cd-agent-release' not found in namespace '${APP_NAMESPACE}'"
+fi
+
+# The Role only matters if it is bound to the CD identity and to nothing else,
+# so the binding is read back as well: its roleRef and its complete subject list.
+if ! cd_binding="$(kubectl get rolebinding jenkins-cd-agent-release -n "$APP_NAMESPACE" \
+        -o go-template='{{.roleRef.kind}}/{{.roleRef.name}}{{"\n"}}{{range .subjects}}{{.kind}}/{{.namespace}}/{{.name}}{{"\n"}}{{end}}' 2>/dev/null)"; then
+    bad "RoleBinding 'jenkins-cd-agent-release' in '${APP_NAMESPACE}' is missing or could not be read"
+else
+    ok "RoleBinding exists: jenkins-cd-agent-release in ${APP_NAMESPACE}"
+    expect_eq "CD RoleBinding roleRef" "Role/jenkins-cd-agent-release" \
+        "$(head -n 1 <<< "$cd_binding")"
+    # Compared as a whole list, so an extra subject is a failure and not an
+    # unnoticed second holder of these permissions.
+    expect_eq "CD RoleBinding subjects" \
+        "ServiceAccount/${JENKINS_NAMESPACE}/jenkins-cd-agent" \
+        "$(tail -n +2 <<< "$cd_binding" | grep -v '^$' || true)"
+fi
+
+assert_no_binding jenkins-cd-agent clusterrolebinding
+
+# --------------------------------------------------------------------------
+# Configuration as Code
+#
+# Read from the ConfigMaps the chart rendered, so this reflects the
+# configuration the controller was actually given. The label is derived from
+# the release name pinned in jenkins/chart.env.
+# --------------------------------------------------------------------------
+
+step "JCasC"
+
+casc="$(kq get configmap -n "$JENKINS_NAMESPACE" \
+    -l "${JENKINS_RELEASE_NAME}-jenkins-config=true" -o jsonpath='{range .items[*]}{.data}{end}')"
+
+if [[ -z "$casc" ]]; then
+    bad "no JCasC ConfigMap found in namespace '${JENKINS_NAMESPACE}'"
+else
+    ok "JCasC ConfigMaps present"
+
+    # The controller runs no build work. This is the mechanism, not a hint.
+    if printf '%s' "$casc" | grep -q 'numExecutors: 0'; then
+        ok "controller numExecutors: 0"
+    else
+        bad "controller numExecutors is not 0 - builds could run on the controller"
+    fi
+
+    for needed in 'securityRealm' 'authorizationStrategy' 'kubernetes:' 'taskflow-ci' 'taskflow-cd'; do
+        if printf '%s' "$casc" | grep -q "$needed"; then
+            ok "JCasC defines ${needed}"
+        else
+            bad "JCasC does not define ${needed}"
+        fi
+    done
+
+    # Agent images must be content-pinned. A tag can be repointed; a digest
+    # cannot, and 'latest' must appear nowhere in the promotion chain.
+    if printf '%s' "$casc" | grep -q ':latest'; then
+        bad "an agent image in JCasC uses the 'latest' tag"
+    else
+        ok "no ':latest' image in the agent templates"
+    fi
+
+    tagged="$(printf '%s' "$casc" | grep -oE 'image: [^ ]+' | grep -cv '@sha256:' || true)"
+    if (( tagged == 0 )); then
+        ok "every agent image is pinned by digest"
+    else
+        bad "${tagged} agent image reference(s) are not pinned by digest"
+    fi
 fi
 
 # --------------------------------------------------------------------------

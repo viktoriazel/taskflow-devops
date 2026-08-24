@@ -20,8 +20,9 @@
 #
 # Ownership, which decides what each mode may touch:
 #   Helm       StatefulSet, Services, ConfigMaps, the Jenkins home PVC
-#   Repository namespace manifest, controller RBAC
-#   Operator   the admin Secret - created by hand, never by this repository
+#   Repository namespace manifest, controller RBAC, agent identities and
+#              permissions
+#   Operator   the admin Secret - managed externally, never by this repository
 #
 # Dependencies: kubectl, helm.
 
@@ -46,10 +47,14 @@ Options:
   --purge-data  Delete the Helm release, including the Jenkins home PVC. With
                 the expected reclaimPolicy Delete that also removes the EBS
                 volume holding JENKINS_HOME, and the data cannot be recovered.
-                Left in place: namespace, controller RBAC, admin Secret.
-  --purge-all   Everything --purge-data removes, plus the controller RBAC and
-                the namespace. Deleting the namespace also removes the admin
-                Secret and anything else living in it.
+                Left in place: namespace, controller RBAC, agent identities,
+                CD permissions in the application namespace, and the admin
+                Secret.
+  --purge-all   Everything --purge-data removes, plus the controller RBAC, the
+                agent identities - including the CD Role and RoleBinding, which
+                live in the application namespace - and the Jenkins namespace.
+                Deleting that namespace also removes the admin Secret and
+                anything else living in it.
   -h, --help    Show this help.
 
 Environment:
@@ -215,7 +220,8 @@ if [[ "$PURGE_ALL" != true ]]; then
     step "Done"
     cat <<EOF
 Removed:   Helm release, controller workload, and the Jenkins home PVC.
-Kept:      namespace ${JENKINS_NAMESPACE}, controller RBAC, Secret ${ADMIN_SECRET_NAME}.
+Kept:      namespace ${JENKINS_NAMESPACE}, controller RBAC, agent identities,
+           CD permissions in ${APP_NAMESPACE}, and Secret ${ADMIN_SECRET_NAME}.
            Reinstalling with install-jenkins.sh reuses them.
 EOF
     [[ -n "$VOLUME_NOTE" ]] && printf '%s\n' "$VOLUME_NOTE"
@@ -238,6 +244,20 @@ else
     warn "RBAC manifest not found at ${RBAC_MANIFEST}; skipping"
 fi
 
+# The CD agent's Role and RoleBinding live in the application namespace, which
+# this script never deletes. Without this step they would outlive the Jenkins
+# installation and leave a standing grant on the application namespace bound to
+# a ServiceAccount that no longer exists.
+step "Removing agent RBAC"
+
+for manifest in "${AGENT_RBAC_MANIFESTS[@]}"; do
+    if [[ -f "$manifest" ]]; then
+        kubectl delete -f "$manifest" --ignore-not-found
+    else
+        warn "agent RBAC manifest not found at ${manifest}; skipping"
+    fi
+done
+
 step "Removing the namespace"
 
 kubectl delete namespace "$JENKINS_NAMESPACE" --ignore-not-found --wait=false
@@ -245,8 +265,9 @@ kubectl delete namespace "$JENKINS_NAMESPACE" --ignore-not-found --wait=false
 step "Done"
 
 cat <<EOF
-Removed:   Helm release, controller workload, the Jenkins home PVC and the
-           controller RBAC.
+Removed:   Helm release, controller workload, the Jenkins home PVC, the
+           controller RBAC, and the agent identities including the CD Role and
+           RoleBinding in namespace ${APP_NAMESPACE}.
 Requested: deletion of namespace ${JENKINS_NAMESPACE}, which takes the admin
            Secret ${ADMIN_SECRET_NAME} with it.
 Next:      recreate the Secret from

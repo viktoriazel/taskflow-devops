@@ -37,6 +37,76 @@ NAMESPACE_MANIFEST="${JENKINS_DIR}/namespace.yaml"
 # shellcheck disable=SC2034
 RBAC_MANIFEST="${JENKINS_DIR}/rbac/controller.yaml"
 
+# Identities and permissions for the dynamic agents. Applied after the
+# controller RBAC and before the release, so a Pod template always has its
+# ServiceAccount. The CD Role lives in the application namespace, which is why
+# that namespace is a prerequisite - see require_app_namespace below.
+# shellcheck disable=SC2034
+AGENT_RBAC_MANIFESTS=(
+    "${JENKINS_DIR}/rbac/agent-serviceaccounts.yaml"
+    "${JENKINS_DIR}/rbac/cd-agent-rbac.yaml"
+)
+
+# The application namespace the CD Role is created in. Fixed rather than
+# overridable: jenkins/rbac/cd-agent-rbac.yaml names this namespace directly, so
+# an override would only check one namespace while the manifest wrote to another.
+APP_NAMESPACE="devops-app"
+
+# --------------------------------------------------------------------------
+# JCasC
+#
+# Jenkins Configuration as Code lives in jenkins/jcasc/*.yaml rather than inside
+# values.yaml, so it stays lintable YAML. Helm receives each file with
+# --set-file, which inserts the file's contents verbatim as a string value and
+# never parses it. One list, used identically by install and configure, so the
+# two cannot drift apart.
+#
+# Each key becomes a ConfigMap and a file name on the controller under
+# /var/jenkins_home/casc_configs, so keys are restricted to RFC 1123 label
+# characters.
+# --------------------------------------------------------------------------
+
+JCASC_DIR="${JENKINS_DIR}/jcasc"
+
+# key:filename
+JCASC_FILES=(
+    "taskflow-system:system.yaml"
+    "taskflow-clouds:clouds.yaml"
+    "taskflow-github:github.yaml"
+)
+
+# Fills JCASC_SET_FILE_ARGS with the --set-file arguments for the JCasC files.
+# Fails if any file is missing: a partially applied JCasC is worse than a
+# refused upgrade, because Jenkins would come up without its Kubernetes cloud
+# and silently accept no builds.
+JCASC_SET_FILE_ARGS=()
+
+jcasc_set_file_args() {
+    local entry key file path
+    JCASC_SET_FILE_ARGS=()
+
+    for entry in "${JCASC_FILES[@]}"; do
+        key="${entry%%:*}"
+        file="${entry#*:}"
+        path="${JCASC_DIR}/${file}"
+        [[ -f "$path" ]] \
+            || fail "JCasC file missing: ${path}
+       Jenkins would start without part of its configuration. Restore the file
+       or remove its entry from JCASC_FILES in jenkins-common.sh."
+        JCASC_SET_FILE_ARGS+=(--set-file "controller.JCasC.configScripts.${key}=${path}")
+        info "JCasC: ${key} <- jenkins/jcasc/${file}"
+    done
+}
+
+# The CD Role is namespaced to the application namespace, so that namespace has
+# to exist before the RoleBinding can be created.
+require_app_namespace() {
+    kubectl get namespace "$APP_NAMESPACE" -o name >/dev/null 2>&1 \
+        || fail "namespace '${APP_NAMESPACE}' does not exist.
+       The CD agent's Role is created in it. Deploy the application first:
+         ${JENKINS_SCRIPT_DIR}/bootstrap-app.sh"
+}
+
 # The admin credentials are an external prerequisite: an operator creates this
 # Secret from jenkins/examples/secret-jenkins-admin.example.yaml. No script here
 # creates the Secret or invents a password, and no credential value is ever
