@@ -73,7 +73,13 @@ JCASC_FILES=(
     "taskflow-system:system.yaml"
     "taskflow-clouds:clouds.yaml"
     "taskflow-github:github.yaml"
+    "taskflow-jobs:jobs.yaml"
 )
+
+# The job definitions, named separately because create-jobs.sh reads the SCM
+# coordinates out of this file as well as shipping it as JCasC.
+# shellcheck disable=SC2034
+JOBS_FILE="${JCASC_DIR}/jobs.yaml"
 
 # Fills JCASC_SET_FILE_ARGS with the --set-file arguments for the JCasC files.
 # Fails if any file is missing: a partially applied JCasC is worse than a

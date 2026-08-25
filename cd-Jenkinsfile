@@ -1,0 +1,1032 @@
+// TaskFlow CD pipeline.
+//
+// Deploys an artifact CI already built, scanned and pushed. The workload is
+// pinned to repository@sha256:<digest>, never to a tag, so what runs is the
+// exact artifact CI verified and cannot change under a repointed tag.
+
+pipeline {
+
+    agent { label 'taskflow-cd' }
+
+    options {
+        skipDefaultCheckout(true)
+        timestamps()
+        // Two runs would race on the same three Deployments, and the slower
+        // rollout could finish last and leave the older release live. With a
+        // single environment and a single deploying job, this is the whole
+        // concurrency boundary.
+        disableConcurrentBuilds()
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '30'))
+    }
+
+    parameters {
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: '',
+            description: 'Image tag produced by CI, for example git-<short-sha>-b<build>-<run>. "latest" is rejected.',
+        )
+        string(
+            name: 'CI_BUILD_NUMBER',
+            defaultValue: '',
+            description: 'Build number of the ci-application run that produced the tag above.',
+        )
+        choice(
+            name: 'ENVIRONMENT',
+            choices: ['dev'],
+            description: 'Target environment.',
+        )
+        text(
+            name: 'RELEASE_NOTE',
+            defaultValue: '',
+            description: 'Optional free-text note recorded in the rollout history.',
+        )
+    }
+
+    environment {
+        AWS_REGION     = 'eu-north-1'
+        ECR_REGISTRY   = '034869165452.dkr.ecr.eu-north-1.amazonaws.com'
+        TARGET_CLUSTER = 'taskflow-dev-eks'
+        SERVICES       = 'backend frontend worker'
+        CI_JOB_NAME    = 'ci-application'
+
+        MANIFEST_DIR   = 'ci-artifact'
+        MANIFEST_FILE  = 'ci-artifact/image-manifest.json'
+        RENDER_DIR     = '.render'
+        PREVIOUS_FILE  = '.render/previous-images.json'
+        BOOTSTRAP_DIR  = 'k8s/base'
+        RELEASE_DIR    = 'k8s/overlays/release'
+
+        ROLLOUT_TIMEOUT = '180s'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                script {
+                    def checkoutDetails = checkout scm
+
+                    env.MANIFEST_COMMIT = checkoutDetails.GIT_COMMIT
+                    env.MANIFEST_BRANCH = checkoutDetails.GIT_BRANCH
+                }
+
+                // The manifests are versioned independently of the image: this
+                // is not the commit the image was built from.
+                echo "manifest commit : ${env.MANIFEST_COMMIT}"
+                echo "manifest branch : ${env.MANIFEST_BRANCH}"
+                echo "build           : #${env.BUILD_NUMBER}"
+                echo "agent           : ${env.NODE_NAME}"
+            }
+        }
+
+        // Every later stage reads the RELEASE_* values published here, never the
+        // raw parameters, so nothing downstream can act on an unchecked input.
+        stage('Validate Parameters') {
+            steps {
+                script {
+                    String imageTag = (params.IMAGE_TAG ?: '').trim()
+                    String ciBuild  = (params.CI_BUILD_NUMBER ?: '').trim()
+                    String target   = (params.ENVIRONMENT ?: '').trim()
+
+                    if (!imageTag) {
+                        error('IMAGE_TAG is empty.')
+                    }
+
+                    // A mutable tag does not identify a single artifact, so it
+                    // cannot be promoted whatever it currently points at.
+                    if (imageTag.toLowerCase() == 'latest') {
+                        error("IMAGE_TAG '${imageTag}' is a mutable tag and is never deployed.")
+                    }
+
+                    if (!(imageTag ==~ /^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$/)) {
+                        error("IMAGE_TAG '${imageTag}' is not a well-formed image tag.")
+                    }
+
+                    if (!(ciBuild ==~ /^[1-9][0-9]{0,8}$/)) {
+                        error("CI_BUILD_NUMBER '${ciBuild}' is not a positive build number.")
+                    }
+
+                    env.RELEASE_TAG       = imageTag
+                    env.RELEASE_CI_BUILD  = ciBuild
+                    env.RELEASE_ENV       = target
+                    env.RELEASE_NAMESPACE = releaseNamespaceFor(target)
+                    env.RELEASE_NOTE_TEXT = sanitiseAnnotation(params.RELEASE_NOTE ?: '')
+
+                    currentBuild.description = "${target}: ${imageTag}"
+                }
+
+                echo "environment : ${env.RELEASE_ENV}"
+                echo "namespace   : ${env.RELEASE_NAMESPACE}"
+                echo "image tag   : ${env.RELEASE_TAG}"
+                echo "ci build    : ${env.CI_JOB_NAME}#${env.RELEASE_CI_BUILD}"
+            }
+        }
+
+        // The Agent Pod's own ServiceAccount token is the only cluster
+        // credential; there is nothing to log in with and nothing to rotate
+        // here. This confirms that identity already carries the release scope,
+        // so a missing grant fails before any work is done rather than midway
+        // through a rollout. can-i is non-mutating and exits non-zero on "no".
+        stage('Authenticate') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        kubectl auth whoami
+
+                        for service in $SERVICES; do
+                            printf '%-10s patch: ' "$service"
+                            kubectl auth can-i patch "deployment/$service" \
+                                --namespace "$RELEASE_NAMESPACE"
+                        done
+                    '''
+                }
+            }
+        }
+
+        stage('Fetch CI Metadata') {
+            steps {
+                copyArtifacts(
+                    projectName: env.CI_JOB_NAME,
+                    selector: specific(env.RELEASE_CI_BUILD),
+                    filter: 'image-manifest.json',
+                    target: env.MANIFEST_DIR,
+                    flatten: true,
+                    // Records the fingerprint CI recorded, which is what links
+                    // this deployment to that build inside Jenkins.
+                    fingerprintArtifacts: true,
+                )
+
+                sh 'cat "$MANIFEST_FILE"'
+            }
+        }
+
+        // Existing in the registry does not make a tag deployable: it has to be
+        // the tag this CI build published, in a manifest describing this build.
+        // Repository names are checked against the mapping this pipeline owns,
+        // not accepted from the artifact, because they are interpolated into
+        // later commands.
+        stage('Verify Provenance') {
+            steps {
+                script {
+                    def manifest = readJSON file: env.MANIFEST_FILE
+
+                    if (manifest.schemaVersion != 1) {
+                        error("image-manifest.json declares schema version ${manifest.schemaVersion}; this pipeline reads version 1.")
+                    }
+
+                    if (manifest.ci.jenkinsJob != env.CI_JOB_NAME) {
+                        error("Manifest was produced by job '${manifest.ci.jenkinsJob}', not by '${env.CI_JOB_NAME}'.")
+                    }
+
+                    if (manifest.ci.buildNumber.toString() != env.RELEASE_CI_BUILD) {
+                        error("Manifest describes build #${manifest.ci.buildNumber}, not #${env.RELEASE_CI_BUILD}.")
+                    }
+
+                    if (manifest.imageTag != env.RELEASE_TAG) {
+                        error("Build #${env.RELEASE_CI_BUILD} published tag '${manifest.imageTag}', not '${env.RELEASE_TAG}'.")
+                    }
+
+                    if (manifest.registry != env.ECR_REGISTRY) {
+                        error("Manifest points at registry '${manifest.registry}', not '${env.ECR_REGISTRY}'.")
+                    }
+
+                    // Ends up in a generated annotation, so it is constrained
+                    // before it is interpolated.
+                    String gitCommit = manifest.source.gitCommit
+                    if (!(gitCommit ==~ /^[0-9a-f]{40}$/)) {
+                        error("Manifest source.gitCommit '${gitCommit}' is not a full Git commit SHA.")
+                    }
+
+                    if (manifest.source.containsKey('gitCommitShort')) {
+                        String shortCommit = manifest.source.gitCommitShort
+                        if (!(shortCommit ==~ /^[0-9a-f]{7,40}$/) || !gitCommit.startsWith(shortCommit)) {
+                            error("Manifest source.gitCommitShort '${shortCommit}' does not prefix ${gitCommit}.")
+                        }
+                    }
+
+                    List services = env.SERVICES.split(' ')
+
+                    // A partial manifest would deploy some services and leave
+                    // the rest on the previous version.
+                    if (manifest.images.keySet().size() != services.size()) {
+                        error("Manifest describes ${manifest.images.keySet()} but the release covers ${services}.")
+                    }
+
+                    for (service in services) {
+                        String repository = expectedRepositoryFor(service)
+                        def image = manifest.images[service]
+
+                        if (!image) {
+                            error("Manifest has no entry for ${service}.")
+                        }
+
+                        if (image.repository != repository) {
+                            error("Manifest maps ${service} to repository '${image.repository}', not '${repository}'.")
+                        }
+
+                        String digest = image.digest
+                        if (!(digest ==~ /^sha256:[0-9a-f]{64}$/)) {
+                            error("Manifest digest for ${service} is not a sha256 digest: ${digest}")
+                        }
+
+                        String expectedDigestRef = "${env.ECR_REGISTRY}/${repository}@${digest}"
+                        if (image.digestRef != expectedDigestRef) {
+                            error("Manifest digestRef for ${service} is '${image.digestRef}', not '${expectedDigestRef}'.")
+                        }
+
+                        if (image.containsKey('imageRef')) {
+                            String expectedImageRef = "${env.ECR_REGISTRY}/${repository}:${env.RELEASE_TAG}"
+                            if (image.imageRef != expectedImageRef) {
+                                error("Manifest imageRef for ${service} is '${image.imageRef}', not '${expectedImageRef}'.")
+                            }
+                        }
+
+                        echo "${service} : ${expectedDigestRef}"
+                    }
+
+                    env.RELEASE_COMMIT = gitCommit
+                    env.RELEASE_CI_URL = manifest.ci.buildUrl
+                }
+            }
+        }
+
+        // Confirms the artifact is still in the registry and that the requested
+        // tag still resolves to the digest CI recorded; a tag and digest that
+        // had drifted apart would mean the manifest no longer describes what is
+        // stored. ecr:DescribeImages is the only AWS action this identity holds.
+        stage('Verify Registry') {
+            steps {
+                container('aws') {
+                    script {
+                        def manifest = readJSON file: env.MANIFEST_FILE
+
+                        for (service in env.SERVICES.split(' ')) {
+                            String repository = expectedRepositoryFor(service)
+                            String digest = manifest.images[service].digest
+
+                            String tags = sh(
+                                returnStdout: true,
+                                script: 'aws ecr describe-images' +
+                                    " --region '${env.AWS_REGION}'" +
+                                    " --repository-name '${repository}'" +
+                                    " --image-ids 'imageDigest=${digest}'" +
+                                    " --query 'imageDetails[0].imageTags'" +
+                                    ' --output text',
+                            ).trim()
+
+                            if (!(tags.split('\\s+').toList().contains(env.RELEASE_TAG))) {
+                                error("In ${repository}, digest ${digest} does not carry tag " +
+                                    "${env.RELEASE_TAG}. Registry tags: ${tags}")
+                            }
+
+                            echo "${service} : ${digest} present and tagged ${env.RELEASE_TAG}"
+                        }
+                    }
+                }
+            }
+        }
+
+        // Rewrites the overlay so the validation below covers exactly what a
+        // deploy would apply rather than the checked-in baseline. Only the Agent
+        // Pod's emptyDir workspace is touched: it is destroyed with the Pod and
+        // nothing is committed, so the repository copy is unaffected.
+        stage('Render Release') {
+            steps {
+                script {
+                    def manifest = readJSON file: env.MANIFEST_FILE
+
+                    env.RELEASE_DEPLOYED_BY = sanitiseAnnotation(releaseTriggeredBy())
+                    env.RELEASE_CI_REF = "${env.CI_JOB_NAME}#${env.RELEASE_CI_BUILD}"
+
+                    String changeCause = sanitiseAnnotation(
+                        "Deploy ${env.RELEASE_TAG} from ${env.RELEASE_CI_REF}" +
+                        " via ${env.JOB_NAME}#${env.BUILD_NUMBER} by ${env.RELEASE_DEPLOYED_BY}" +
+                        (env.RELEASE_NOTE_TEXT ? " - ${env.RELEASE_NOTE_TEXT}" : '')
+                    )
+
+                    Map annotations = [:]
+                    Map digests = [:]
+                    for (service in env.SERVICES.split(' ')) {
+                        annotations[service] = [
+                            'taskflow.io/git-commit' : env.RELEASE_COMMIT,
+                            'taskflow.io/ci-build'   : env.RELEASE_CI_REF,
+                            'taskflow.io/image-tag'  : env.RELEASE_TAG,
+                            'taskflow.io/deployed-by': env.RELEASE_DEPLOYED_BY,
+                        ]
+                        digests[service] = manifest.images[service].digest
+                    }
+
+                    writeReleaseAnnotations(changeCause, annotations)
+                    setReleaseImages(digests)
+                }
+
+                sh 'cat "$RELEASE_DIR/kustomization.yaml"'
+            }
+        }
+
+        // The full bootstrap set gets a client-side render only: a server-side
+        // dry-run authorises exactly as a real apply, and CD holds no permission
+        // on Namespace, ServiceAccounts, ConfigMap, Services or Ingress, so it
+        // would be denied. That denial is the boundary working as designed;
+        // widening RBAC to satisfy a validation step would remove it.
+        //
+        // The release overlay is the scope CD may touch, so it gets the full
+        // server-side dry-run: schema, admission and authorisation together.
+        stage('Validate Manifests') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        mkdir -p "$RENDER_DIR"
+                        kubectl version --client
+
+                        kubectl kustomize "$BOOTSTRAP_DIR" > "$RENDER_DIR/bootstrap.yaml"
+                        echo "bootstrap set renders:"
+                        grep -E '^(kind|  name):' "$RENDER_DIR/bootstrap.yaml" | sed 's/^/  /'
+
+                        kubectl kustomize "$RELEASE_DIR" > "$RENDER_DIR/release.yaml"
+                        echo "release scope renders:"
+                        grep -E '^(kind|  name|        image):' "$RENDER_DIR/release.yaml" | sed 's/^/  /'
+                    '''
+
+                    // --namespace is a guard, not a target: every manifest names
+                    // its own namespace and kubectl refuses if the two disagree.
+                    sh '''
+                        set -eu
+                        kubectl apply -k "$RELEASE_DIR" \
+                            --namespace "$RELEASE_NAMESPACE" \
+                            --dry-run=server
+                    '''
+                }
+            }
+        }
+
+        stage('Release Plan') {
+            steps {
+                script {
+                    def manifest = readJSON file: env.MANIFEST_FILE
+
+                    String apiServer = ''
+                    container('kubectl') {
+                        apiServer = sh(
+                            returnStdout: true,
+                            script: 'echo "https://$KUBERNETES_SERVICE_HOST:$KUBERNETES_SERVICE_PORT"',
+                        ).trim()
+                    }
+
+                    echo '================ release plan ================'
+                    echo "triggered by : ${env.RELEASE_DEPLOYED_BY}"
+                    echo "cd build     : ${env.JOB_NAME}#${env.BUILD_NUMBER}"
+                    echo "ci build     : ${env.RELEASE_CI_REF} (${env.RELEASE_CI_URL})"
+                    echo "app commit   : ${env.RELEASE_COMMIT}"
+                    echo "manifests    : ${env.MANIFEST_COMMIT} (${env.MANIFEST_BRANCH})"
+                    echo "image tag    : ${env.RELEASE_TAG}"
+                    echo "environment  : ${env.RELEASE_ENV}"
+                    echo "cluster      : ${env.TARGET_CLUSTER}"
+                    echo "api server   : ${apiServer}"
+                    echo "namespace    : ${env.RELEASE_NAMESPACE}"
+                    echo "note         : ${env.RELEASE_NOTE_TEXT ?: '(none)'}"
+
+                    for (service in env.SERVICES.split(' ')) {
+                        echo "deploy       : ${service} -> ${manifest.images[service].digestRef}"
+                    }
+                    echo '=============================================='
+                }
+            }
+        }
+
+        // All three Deployments are recorded and validated in this stage, which
+        // completes before the first mutation. A rollback can therefore never
+        // find one service recorded and another still unknown.
+        //
+        // A reference that is not a digest for the expected repository fails the
+        // build here: without a recoverable previous state there is nothing to
+        // roll back to, and deploying anyway would be a one-way change.
+        stage('Capture Previous State') {
+            steps {
+                script {
+                    Map services = [:]
+
+                    for (service in env.SERVICES.split(' ')) {
+                        String repository = expectedRepositoryFor(service)
+                        Map declared = declaredState(service)
+                        String image = declared.reference
+
+                        String prefix = "${env.ECR_REGISTRY}/${repository}@"
+                        if (!image.startsWith(prefix)) {
+                            error("Deployment ${service} currently runs '${image}', which is not a " +
+                                "digest reference into ${repository}. Refusing to deploy without a " +
+                                'recoverable previous state.')
+                        }
+
+                        String digest = image.substring(prefix.length())
+                        if (!(digest ==~ /^sha256:[0-9a-f]{64}$/)) {
+                            error("Deployment ${service} currently runs '${image}', whose digest is malformed.")
+                        }
+
+                        services[service] = [
+                            repository : repository,
+                            digest     : digest,
+                            reference  : image,
+                            annotations: declared.annotations,
+                        ]
+
+                        echo "${service} : ${image}"
+                    }
+
+                    writeJSON(
+                        file: env.PREVIOUS_FILE,
+                        pretty: 2,
+                        json: [
+                            schemaVersion: 1,
+                            capturedAt   : utcTimestamp(),
+                            cluster      : env.TARGET_CLUSTER,
+                            namespace    : env.RELEASE_NAMESPACE,
+                            cdBuild      : "${env.JOB_NAME}#${env.BUILD_NUMBER}".toString(),
+                            services     : services,
+                        ],
+                    )
+                }
+
+                sh 'cat "$PREVIOUS_FILE"'
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                // Set before the apply rather than after: apply walks the three
+                // Deployments in sequence, so a failure partway through has
+                // already changed the environment and still needs a rollback.
+                script {
+                    env.DEPLOY_STARTED = 'true'
+                }
+
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        kubectl apply -k "$RELEASE_DIR" --namespace "$RELEASE_NAMESPACE"
+                    '''
+                }
+
+                script {
+                    env.DEPLOY_APPLIED = 'true'
+                }
+            }
+        }
+
+        // An accepted apply only means the desired state was recorded. The
+        // release is not deployed until every Deployment has rolled out.
+        stage('Rollout') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        for service in $SERVICES; do
+                            kubectl rollout status "deployment/$service" \
+                                --namespace "$RELEASE_NAMESPACE" \
+                                --timeout="$ROLLOUT_TIMEOUT"
+                        done
+                    '''
+                }
+            }
+        }
+
+        stage('Verify Release') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        kubectl get deployments,pods --namespace "$RELEASE_NAMESPACE" -o wide
+                        kubectl get services --namespace "$RELEASE_NAMESPACE"
+                        kubectl get ingress --namespace "$RELEASE_NAMESPACE"
+                    '''
+                }
+
+                script {
+                    def manifest = readJSON file: env.MANIFEST_FILE
+
+                    // The digest is the proof of identity. The annotations are
+                    // read back as well, but only to confirm the human-readable
+                    // record agrees with it.
+                    for (service in env.SERVICES.split(' ')) {
+                        String expectedRef =
+                            "${env.ECR_REGISTRY}/${expectedRepositoryFor(service)}@${manifest.images[service].digest}"
+                        List rows = runningPodRows(service)
+
+                        if (!rows) {
+                            error("No running Pods found for ${service}.")
+                        }
+
+                        for (row in rows) {
+                            if (row[3] != expectedRef) {
+                                error("Pod ${row[0]} runs ${row[3]}, not the verified ${expectedRef}.")
+                            }
+
+                            if (row[4] != env.RELEASE_COMMIT || row[5] != env.RELEASE_CI_REF ||
+                                row[6] != env.RELEASE_TAG || row[7] != env.RELEASE_DEPLOYED_BY) {
+                                error("Pod ${row[0]} carries release annotations from another release: " +
+                                    "${row[4]} / ${row[5]} / ${row[6]} / ${row[7]}")
+                            }
+
+                            echo "${row[0]} : ${row[3]}"
+                        }
+
+                        echo "${service} : ${rows.size()} running Pod(s) on the verified digest, " +
+                            "annotated ${env.RELEASE_CI_REF} / ${env.RELEASE_TAG} / ${env.RELEASE_DEPLOYED_BY}"
+                    }
+
+                    // Read from a list rather than by name: CD is granted list
+                    // on Ingress and not get.
+                    container('kubectl') {
+                        env.APP_ENDPOINT = sh(
+                            returnStdout: true,
+                            script: 'kubectl get ingress --namespace "$RELEASE_NAMESPACE"' +
+                                ' -o jsonpath=\'{.items[?(@.metadata.name=="frontend")].status.loadBalancer.ingress[0].hostname}\'',
+                        ).trim()
+                    }
+
+                    if (!env.APP_ENDPOINT) {
+                        error('The frontend Ingress has no load balancer hostname yet.')
+                    }
+
+                    echo "endpoint : http://${env.APP_ENDPOINT}"
+                }
+            }
+        }
+
+        // Reached over the application's own Ingress, so this exercises the
+        // path a user takes rather than a Pod IP. curl is already present in
+        // the default agent container and the request needs no Kubernetes API
+        // access, so no extra container is introduced for it. Retried because
+        // ALB target registration lags a finished rollout.
+        stage('Smoke Test') {
+            steps {
+                sh '''
+                    set -eu
+                    attempts=8
+
+                    for path in /ready /login; do
+                        url="http://$APP_ENDPOINT$path"
+                        attempt=1
+
+                        while : ; do
+                            status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" || echo 000)"
+
+                            if [ "$status" = "200" ]; then
+                                echo "smoke $path -> $status"
+                                break
+                            fi
+
+                            if [ "$attempt" -ge "$attempts" ]; then
+                                echo "smoke $path -> $status after $attempts attempts"
+                                exit 1
+                            fi
+
+                            echo "smoke $path -> $status (attempt $attempt of $attempts), retrying"
+                            attempt=$((attempt + 1))
+                            sleep 5
+                        done
+                    done
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: "${env.MANIFEST_DIR}/image-manifest.json, ${env.RENDER_DIR}/release.yaml," +
+                    " ${env.RENDER_DIR}/previous-images.json",
+                allowEmptyArchive: true,
+                fingerprint: true,
+            )
+        }
+
+        failure {
+            script {
+                if (env.DEPLOY_STARTED != 'true') {
+                    echo 'Failed before the release was applied. The environment is unchanged and no rollback is needed.'
+                } else {
+                    // Both swallow their own errors. Diagnostics run first
+                    // because a rollback overwrites the state they describe,
+                    // and they must never cost the environment its rollback.
+                    collectDiagnostics()
+                    rollbackRelease()
+                }
+            }
+        }
+
+        success {
+            echo "Deployed ${env.RELEASE_TAG} to ${env.RELEASE_ENV} (${env.TARGET_CLUSTER}/${env.RELEASE_NAMESPACE}); " +
+                'rollout, digest verification and smoke test all passed.'
+        }
+
+        // Last, so diagnostics and rollback still have the recorded previous
+        // state to work from.
+        cleanup {
+            cleanWs()
+        }
+    }
+}
+
+// The whitelist: an environment absent from the map has no namespace and the
+// build stops rather than falling back to a default.
+String releaseNamespaceFor(String environmentName) {
+    Map<String, String> namespaces = ['dev': 'devops-app']
+
+    String namespace = namespaces[environmentName]
+    if (!namespace) {
+        error("Environment '${environmentName}' is not a deployable environment. Allowed: ${namespaces.keySet()}")
+    }
+
+    return namespace
+}
+
+// Repository names are owned by this pipeline rather than read from the CI
+// artifact, so a manifest cannot redirect a service at another repository.
+String expectedRepositoryFor(String service) {
+    Map<String, String> repositories = [
+        'backend' : 'taskflow-dev-backend',
+        'frontend': 'taskflow-dev-frontend',
+        'worker'  : 'taskflow-dev-worker',
+    ]
+
+    String repository = repositories[service]
+    if (!repository) {
+        error("No repository is defined for service '${service}'.")
+    }
+
+    return repository
+}
+
+List provenanceAnnotationKeys() {
+    return [
+        'taskflow.io/git-commit',
+        'taskflow.io/ci-build',
+        'taskflow.io/image-tag',
+        'taskflow.io/deployed-by',
+    ]
+}
+
+// An interactive run carries a user; a run triggered by CI or a webhook carries
+// none, so the cause description is used instead of inventing an operator.
+String releaseTriggeredBy() {
+    def userCauses = currentBuild.getBuildCauses('hudson.model.Cause$UserIdCause')
+    if (userCauses) {
+        return userCauses[0].userId.toString()
+    }
+
+    def causes = currentBuild.getBuildCauses()
+    return causes ? causes[0].shortDescription.toString() : 'unknown'
+}
+
+// Operator-supplied text reaches a generated manifest, so it is reduced to one
+// line of characters safe inside a YAML double-quoted scalar and capped.
+String sanitiseAnnotation(String value) {
+    String single = value.replaceAll(/[^A-Za-z0-9 .,:;\/@#()\[\]+=_-]/, ' ').replaceAll(/\s+/, ' ').trim()
+    return single.length() > 200 ? single.substring(0, 200) : single
+}
+
+String utcTimestamp() {
+    return sh(returnStdout: true, script: 'date -u +%Y-%m-%dT%H:%M:%SZ').trim()
+}
+
+// Regenerates the overlay's traceability patch. change-cause belongs on the
+// Deployment, where rollout history reads it; the provenance annotations go on
+// the Pod template so they describe the image revision they live with.
+//
+// A service with no recorded annotations gets no Pod template block at all. The
+// base Deployments carry none, so apply then removes whatever the previous
+// release left rather than merging the two.
+void writeReleaseAnnotations(String changeCause, Map annotationsByService) {
+    String patch = ''
+
+    for (service in env.SERVICES.split(' ')) {
+        patch += """---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${service}
+  namespace: ${env.RELEASE_NAMESPACE}
+  annotations:
+    kubernetes.io/change-cause: "${changeCause}"
+"""
+
+        Map annotations = annotationsByService[service] ?: [:]
+        String rendered = ''
+        for (key in provenanceAnnotationKeys()) {
+            if (annotations[key]) {
+                rendered += "        ${key}: \"${annotations[key]}\"\n"
+            }
+        }
+
+        if (rendered) {
+            patch += "spec:\n  template:\n    metadata:\n      annotations:\n" + rendered
+        }
+    }
+
+    writeFile file: "${env.RELEASE_DIR}/release-annotations.yaml", text: patch
+}
+
+void setReleaseImages(Map digestByService) {
+    def arguments = []
+    for (service in env.SERVICES.split(' ')) {
+        String repositoryRef = "${env.ECR_REGISTRY}/${expectedRepositoryFor(service)}"
+        arguments.add("'${repositoryRef}=${repositoryRef}@${digestByService[service]}'")
+    }
+
+    container('kustomize') {
+        sh """
+            set -eu
+            kustomize version
+            cd "${env.RELEASE_DIR}"
+            kustomize edit set image ${arguments.join(' ')}
+        """
+    }
+}
+
+// Pods of one Deployment that are neither terminating nor finished. A rollout
+// that has already reported success can still leave an old Pod terminating, and
+// counting that Pod would report a version mismatch that does not exist.
+// Columns: name, deletionTimestamp, phase, image, then the four provenance
+// annotations in the order provenanceAnnotationKeys() returns them.
+List runningPodRows(String service) {
+    String jsonPath = '{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}' +
+        "{\"|\"}{.spec.containers[?(@.name==\"${service}\")].image}" +
+        '{"|"}{.metadata.annotations.taskflow\\.io/git-commit}' +
+        '{"|"}{.metadata.annotations.taskflow\\.io/ci-build}' +
+        '{"|"}{.metadata.annotations.taskflow\\.io/image-tag}' +
+        '{"|"}{.metadata.annotations.taskflow\\.io/deployed-by}' +
+        '{"\\n"}{end}'
+
+    String raw = ''
+    container('kubectl') {
+        raw = sh(
+            returnStdout: true,
+            script: 'kubectl get pods --namespace "$RELEASE_NAMESPACE"' +
+                " --selector app.kubernetes.io/name=${service}" +
+                " -o jsonpath='${jsonPath}'",
+        )
+    }
+
+    List rows = []
+    for (line in raw.split('\n')) {
+        if (!line.trim()) {
+            continue
+        }
+
+        List cells = line.split('\\|', -1).toList()
+        if (cells[1] || cells[2] in ['Succeeded', 'Failed']) {
+            continue
+        }
+
+        rows.add(cells)
+    }
+
+    return rows
+}
+
+// The Pod template a Deployment currently declares, reduced to the shape the
+// previous state is recorded in. Read as whole-object JSON rather than through
+// JSONPath expressions, so the annotation map arrives as data instead of as
+// whatever text form the client renders a map in.
+Map declaredState(String service) {
+    String rawJson = ''
+    container('kubectl') {
+        rawJson = sh(
+            returnStdout: true,
+            script: "kubectl get deployment ${service} --namespace \"\$RELEASE_NAMESPACE\" -o json",
+        )
+    }
+
+    def deployment = readJSON text: rawJson
+
+    List matching = []
+    for (candidate in deployment.spec.template.spec.containers) {
+        if (candidate.name == service) {
+            matching.add(candidate)
+        }
+    }
+
+    if (matching.size() != 1) {
+        error("Deployment ${service} declares ${matching.size()} containers named '${service}'; expected exactly one.")
+    }
+
+    // Carried through the same sanitiser the release path uses, so a value
+    // written back during a rollback is known to be safe in the generated
+    // manifest.
+    def live = deployment.spec.template.metadata.annotations ?: [:]
+    Map annotations = [:]
+    for (key in provenanceAnnotationKeys()) {
+        if (live.containsKey(key)) {
+            annotations[key] = sanitiseAnnotation(live[key].toString())
+        }
+    }
+
+    return [reference: matching[0].image.toString(), annotations: annotations]
+}
+
+// One definition of "still the recorded previous state", shared by the drift
+// check that decides whether to roll back at all and by the verification after
+// each rollback path.
+//
+// The image alone is not enough. Redeploying the same digest with different
+// provenance annotations changes the environment, and a rollback that only
+// compared digests would leave the failed release's traceability record sitting
+// on the restored image.
+//
+// Both the declared Pod template and every running Pod have to match: an apply
+// that updated the Deployment but whose Pods have not appeared yet is still a
+// change that needs undoing.
+List servicesDifferingFrom(Map recordedServices) {
+    List differing = []
+
+    for (service in env.SERVICES.split(' ')) {
+        Map recorded = recordedServices[service]
+        Map declared = declaredState(service)
+
+        if (declared.reference != recorded.reference ||
+            !annotationsMatchRecorded(declared.annotations, recorded.annotations)) {
+            differing.add(service)
+            continue
+        }
+
+        List rows = runningPodRows(service)
+        if (!rows) {
+            differing.add(service)
+            continue
+        }
+
+        for (row in rows) {
+            Map podAnnotations = [:]
+            List keys = provenanceAnnotationKeys()
+            for (int i = 0; i < keys.size(); i++) {
+                if (row[4 + i]) {
+                    podAnnotations[keys[i]] = row[4 + i]
+                }
+            }
+
+            if (row[3] != recorded.reference ||
+                !annotationsMatchRecorded(podAnnotations, recorded.annotations)) {
+                differing.add(service)
+                break
+            }
+        }
+    }
+
+    return differing
+}
+
+// A key absent from the recorded state is expected to be absent live too.
+boolean annotationsMatchRecorded(Map live, Map recorded) {
+    for (key in provenanceAnnotationKeys()) {
+        String liveValue = (live != null && live.containsKey(key)) ? live[key].toString() : ''
+        String recordedValue = (recorded != null && recorded.containsKey(key)) ? recorded[key].toString() : ''
+
+        if (liveValue != recordedValue) {
+            return false
+        }
+    }
+
+    return true
+}
+
+boolean runtimeMatchesRecordedState(Map recordedServices) {
+    return servicesDifferingFrom(recordedServices).isEmpty()
+}
+
+// Never throws: diagnostics that cannot run must not replace the failure that
+// triggered them, and must not cost the environment its rollback. returnStatus
+// covers a failing command; the wrapper covers a failing step, a container that
+// is gone, or an agent that has been lost.
+void collectDiagnostics() {
+    echo '================ diagnostics ================'
+
+    try {
+        container('kubectl') {
+            sh(returnStatus: true, script: '''
+            set +e
+
+            kubectl get deployments,replicasets,pods --namespace "$RELEASE_NAMESPACE" -o wide
+            kubectl get events --namespace "$RELEASE_NAMESPACE" --sort-by=.metadata.creationTimestamp
+
+            for service in $SERVICES; do
+                echo "===== describe deployment: $service ====="
+                kubectl describe "deployment/$service" --namespace "$RELEASE_NAMESPACE"
+            done
+
+            unhealthy="$(kubectl get pods --namespace "$RELEASE_NAMESPACE" \
+                -o jsonpath='{range .items[?(@.status.containerStatuses[0].ready==false)]}{.metadata.name}{" "}{end}')"
+
+            for pod in $unhealthy; do
+                echo "===== describe pod: $pod ====="
+                kubectl describe "pod/$pod" --namespace "$RELEASE_NAMESPACE"
+                echo "===== logs: $pod ====="
+                kubectl logs "$pod" --namespace "$RELEASE_NAMESPACE" --tail=100 --all-containers
+                echo "===== previous logs: $pod ====="
+                kubectl logs "$pod" --namespace "$RELEASE_NAMESPACE" --tail=100 --all-containers --previous
+            done
+            ''')
+        }
+    } catch (Exception diagnosticsFailure) {
+        echo "Diagnostics could not be collected: ${diagnosticsFailure.message}"
+    }
+
+    echo '============================================='
+}
+
+// Called only from post.failure, and never throws, so it cannot fail the build
+// a second time or trigger itself again.
+//
+// Two paths. rollout undo is the primary one and restores the previous
+// ReplicaSet together with its Pod template annotations, so the traceability
+// record stays true to the image it sits on. Its result is then checked against
+// the state recorded before the deploy - that recording, not the revision
+// history, is what defines "previous". If that check fails, the same narrow
+// release mechanism reapplies the recorded digests and their annotations
+// directly.
+void rollbackRelease() {
+    String outcome
+
+    try {
+        def previous = readJSON file: env.PREVIOUS_FILE
+        List drifted = servicesDifferingFrom(previous.services)
+
+        // The deploy marker is set before the apply, so it is also set when the
+        // apply changed nothing. Undoing in that case would roll the previous
+        // release back rather than restore it.
+        if (!drifted) {
+            echo 'Rollback not needed: every Deployment still matches the recorded previous release.'
+            currentBuild.description = "${currentBuild.description} (no change applied)"
+            return
+        }
+
+        echo "Rolling back: ${drifted}"
+        outcome = 'FAILED'
+
+        try {
+            container('kubectl') {
+                for (service in drifted) {
+                    sh "kubectl rollout undo deployment/${service} --namespace \"\$RELEASE_NAMESPACE\""
+                }
+                for (service in drifted) {
+                    sh "kubectl rollout status deployment/${service}" +
+                        ' --namespace "$RELEASE_NAMESPACE" --timeout="$ROLLOUT_TIMEOUT"'
+                }
+            }
+
+            if (runtimeMatchesRecordedState(previous.services)) {
+                outcome = 'restored by rollout undo'
+            } else {
+                echo 'rollout undo did not restore the recorded digests; reapplying them directly.'
+            }
+        } catch (Exception undoFailure) {
+            echo "rollout undo failed: ${undoFailure.message}"
+        }
+
+        if (outcome == 'FAILED') {
+            Map digests = [:]
+            Map annotations = [:]
+            for (service in env.SERVICES.split(' ')) {
+                digests[service] = previous.services[service].digest
+                annotations[service] = previous.services[service].annotations
+            }
+
+            writeReleaseAnnotations(
+                sanitiseAnnotation("Rollback to the release recorded before ${env.JOB_NAME}#${env.BUILD_NUMBER}"),
+                annotations,
+            )
+            setReleaseImages(digests)
+
+            container('kubectl') {
+                sh '''
+                    set -eu
+                    kubectl apply -k "$RELEASE_DIR" --namespace "$RELEASE_NAMESPACE"
+
+                    for service in $SERVICES; do
+                        kubectl rollout status "deployment/$service" \
+                            --namespace "$RELEASE_NAMESPACE" \
+                            --timeout="$ROLLOUT_TIMEOUT"
+                    done
+                '''
+            }
+
+            outcome = runtimeMatchesRecordedState(previous.services)
+                ? 'restored from the recorded digests'
+                : 'FAILED'
+        }
+    } catch (Exception rollbackFailure) {
+        outcome = 'FAILED'
+        echo "Rollback error: ${rollbackFailure.message}"
+    }
+
+    if (outcome == 'FAILED') {
+        echo 'ROLLBACK FAILED. The environment does not match the recorded previous release and needs ' +
+            'manual attention; .render/previous-images.json is archived with this build and holds the ' +
+            'digests to restore.'
+    } else {
+        echo "Rollback ${outcome}. The build stays failed: the release did not deploy."
+    }
+}
