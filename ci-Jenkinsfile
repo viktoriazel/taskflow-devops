@@ -1,0 +1,652 @@
+// TaskFlow CI pipeline.
+//
+// Builds, scans and publishes the three application images, and stops there.
+// There is no deploy stage. The CI agent runs as jenkins-ci-agent, whose
+// ServiceAccount token is not mounted, so the Pod holds no ordinary in-cluster
+// Kubernetes credential; this file carries no kubeconfig and no other Kubernetes
+// credential either. The pipeline therefore has no identity it could authenticate
+// a deployment with, which is a credential boundary rather than a network one.
+// Deployment is a separate job with its own agent and its own RBAC.
+//
+// The invariant the whole file is built around:
+//
+//     build once -> scan that artifact -> push that artifact -> verify the digest
+//
+// Each service is built exactly once into an OCI image layout in the ephemeral
+// workspace. Trivy scans that directory, skopeo copies that same directory to
+// Amazon ECR with --preserve-digests, and the pipeline then reads the digest
+// back from the registry and fails unless it is byte-for-byte the digest
+// BuildKit reported. Nothing is rebuilt between those steps.
+//
+// Registry credentials are never stored here. The agent receives short-lived AWS
+// credentials from EKS Pod Identity, exchanges them for a registry authorization
+// token inside the Pod, and keeps that token on a memory-backed volume that sits
+// outside the workspace, so no archive step can reach it.
+//
+// Container names and the agent label come from the Pod templates in
+// jenkins/jcasc/clouds.yaml. Every step runs with the workspace as its working
+// directory, which is why the paths below are relative to it.
+
+pipeline {
+
+    // Dynamic Agent Pod, created for this build and deleted with it. The
+    // controller carries zero executors and cannot run any of this itself.
+    agent { label 'taskflow-ci' }
+
+    options {
+        // The Checkout stage below does the checkout explicitly, so the commit
+        // it acts on is visible in the log rather than implied.
+        skipDefaultCheckout(true)
+        timestamps()
+        // A CI run is heavy: three image builds, three scans and three pushes.
+        // The dedicated Jenkins node is sized for one such Pod at a time, so
+        // serialising runs keeps them off each other's CPU and memory instead of
+        // leaving a second heavyweight agent Pod Pending until the first is done.
+        disableConcurrentBuilds()
+        timeout(time: 45, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '30'))
+    }
+
+    environment {
+        // Non-secret coordinates only. An AWS account id is not a credential,
+        // and the same registry already appears in the application manifests.
+        AWS_REGION   = 'eu-north-1'
+        ECR_REGISTRY = '034869165452.dkr.ecr.eu-north-1.amazonaws.com'
+        ECR_PREFIX   = 'taskflow-dev'
+
+        // Single source of truth for the service list, shared by the shell loops
+        // and the Groovy steps.
+        SERVICES = 'backend frontend worker'
+
+        // Build outputs. Both live in the workspace emptyDir, which the kubelet
+        // destroys with the Pod.
+        ARTIFACT_DIR = '.artifacts'
+        REPORT_DIR   = 'reports'
+
+        // Pinned lint and test tooling, installed into the ephemeral workspace.
+        VENV = '.venv'
+
+        // Memory-backed volume shared by the aws and skopeo containers only. It
+        // is deliberately outside the workspace so no archive step can reach it.
+        ECR_TOKEN_FILE = '/ecr-auth/token'
+        ECR_AUTH_FILE  = '/ecr-auth/auth.json'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                script {
+                    def checkoutDetails = checkout scm
+
+                    env.GIT_COMMIT_FULL  = checkoutDetails.GIT_COMMIT
+                    env.GIT_BRANCH_NAME  = checkoutDetails.GIT_BRANCH
+                    env.GIT_URL_HTTPS    = checkoutDetails.GIT_URL
+                    env.GIT_COMMIT_SHORT = sh(
+                        returnStdout: true,
+                        script: 'git rev-parse --short=12 HEAD',
+                    ).trim()
+                }
+
+                // Traceability, in the build log itself: which commit, which
+                // branch, which build. None of these is a secret.
+                echo "commit : ${env.GIT_COMMIT_FULL}"
+                echo "short  : ${env.GIT_COMMIT_SHORT}"
+                echo "branch : ${env.GIT_BRANCH_NAME}"
+                echo "origin : ${env.GIT_URL_HTTPS}"
+                echo "build  : #${env.BUILD_NUMBER}"
+                echo "agent  : ${env.NODE_NAME}"
+            }
+        }
+
+        stage('Validation') {
+            steps {
+                container('python') {
+                    // The pinned toolchain, installed into the ephemeral
+                    // workspace rather than into the image, so no build can
+                    // inherit another build's dependencies.
+                    //
+                    // One environment for all three services: their test suites
+                    // are written to survive a single repo-wide run, and their
+                    // requirements files pin every shared package to the same
+                    // version, so nothing here is ambiguous. If that ever stops
+                    // being true, pip's resolver fails this stage rather than
+                    // letting a build run against an environment nobody chose.
+                    sh '''
+                        set -eu
+                        python -m venv "$VENV"
+
+                        requirements="-r requirements-dev.txt"
+                        for service in $SERVICES; do
+                            requirements="$requirements -r $service/requirements.txt"
+                        done
+
+                        "$VENV/bin/pip" install \
+                            --no-cache-dir --disable-pip-version-check \
+                            $requirements
+                    '''
+
+                    // Structural validation: project layout, the three
+                    // Dockerfiles, the pinned tooling, and the Kustomize
+                    // reference graph. Rendering the manifests and dry-running
+                    // them against the API server belongs to the deployment
+                    // pipeline, which is the side that carries kubectl,
+                    // kustomize and a cluster credential.
+                    sh '''
+                        set -eu
+                        "$VENV/bin/python" scripts/validate-repository.py
+                    '''
+                }
+            }
+        }
+
+        stage('Lint') {
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        "$VENV/bin/ruff" --version
+                        "$VENV/bin/ruff" check .
+                    '''
+                }
+            }
+        }
+
+        stage('Tests') {
+            steps {
+                container('python') {
+                    // -e is turned off deliberately: every service must run and
+                    // produce its report even after an earlier one fails, so the
+                    // published results describe the whole commit rather than
+                    // stopping at the first failure. The accumulated status is
+                    // what fails the build.
+                    sh '''
+                        set +e
+                        set -u
+
+                        mkdir -p "$REPORT_DIR"
+                        status=0
+
+                        for service in $SERVICES; do
+                            echo "===== pytest: $service ====="
+                            "$VENV/bin/python" -m pytest "$service/tests" \
+                                --junit-xml "$REPORT_DIR/junit-$service.xml" \
+                                -o junit_suite_name="$service" || status=1
+                        done
+
+                        exit $status
+                    '''
+                }
+            }
+            post {
+                // Runs whether the step above passed or failed, so a red build
+                // still publishes the reports that explain why it is red. The
+                // non-zero exit code above is what fails the build; this step
+                // only publishes what that run produced.
+                always {
+                    junit(
+                        testResults: "${env.REPORT_DIR}/junit-*.xml",
+                        allowEmptyResults: true,
+                        keepLongStdio: true,
+                    )
+                }
+            }
+        }
+
+        stage('Tag') {
+            steps {
+                script {
+                    // One identifier for the whole run, taken once and reused by
+                    // all three services. BUILD_NUMBER alone is not enough: it
+                    // restarts if the controller is restored from a backup, and
+                    // ECR repositories are immutable, so a repeated tag would be
+                    // a hard push failure at the end of a long build.
+                    env.RUN_ID = sh(returnStdout: true, script: 'date -u +%s%3N').trim()
+                    env.IMAGE_TAG = "git-${env.GIT_COMMIT_SHORT}-b${env.BUILD_NUMBER}-${env.RUN_ID}"
+                    currentBuild.description = env.IMAGE_TAG
+                }
+
+                echo "run id    : ${env.RUN_ID}"
+                echo "image tag : ${env.IMAGE_TAG}"
+
+                container('aws') {
+                    // Collision guard, before anything is built. A tag that
+                    // already exists is a hard stop: never overwritten, never
+                    // skipped, never replaced by a fallback tag. A missing image
+                    // is the expected answer and is told apart from an
+                    // authentication or network failure, which must not be
+                    // swallowed into the same branch.
+                    sh '''
+                        set -u
+                        status=0
+
+                        for service in $SERVICES; do
+                            repository="$ECR_PREFIX-$service"
+                            errors="$(mktemp)"
+
+                            if aws ecr describe-images \
+                                    --region "$AWS_REGION" \
+                                    --repository-name "$repository" \
+                                    --image-ids "imageTag=$IMAGE_TAG" \
+                                    >/dev/null 2>"$errors"; then
+                                echo "FAIL $repository already carries tag $IMAGE_TAG"
+                                status=1
+                            elif grep -q 'ImageNotFoundException' "$errors"; then
+                                echo "OK   $repository is free to accept tag $IMAGE_TAG"
+                            else
+                                echo "FAIL $repository could not be queried:"
+                                sed 's/^/     /' "$errors"
+                                status=1
+                            fi
+
+                            rm -f "$errors"
+                        done
+
+                        exit $status
+                    '''
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                container('buildkit') {
+                    // Rootless BuildKit. No Docker daemon, no /var/run/docker.sock
+                    // and no hostPath: buildctl reaches the buildkitd process in
+                    // this container over a socket on an emptyDir.
+                    //
+                    // One build per service, and the only build in this pipeline.
+                    // The OCI layout written here is what every later stage acts
+                    // on, unchanged.
+                    sh '''
+                        set -eu
+
+                        # Set explicitly rather than relying on the image's own
+                        # environment surviving the exec into this container.
+                        export BUILDKIT_HOST=unix:///run/user/1000/buildkit/buildkitd.sock
+
+                        artifacts="$WORKSPACE/$ARTIFACT_DIR"
+                        mkdir -p "$artifacts"
+                        buildctl --version
+
+                        for service in $SERVICES; do
+                            echo "===== build: $service ====="
+
+                            # Separate output and metadata paths per service, so
+                            # no service can overwrite another's artifact.
+                            #
+                            # tar=false writes an OCI layout directory rather
+                            # than a tarball. That is what the scanner and the
+                            # registry client below can both read directly, which
+                            # is what keeps one artifact in play from here to the
+                            # registry instead of two representations of it.
+                            buildctl build \
+                                --frontend dockerfile.v0 \
+                                --local "context=$WORKSPACE/$service" \
+                                --local "dockerfile=$WORKSPACE/$service" \
+                                --opt "label:org.opencontainers.image.revision=$GIT_COMMIT_FULL" \
+                                --opt "label:org.opencontainers.image.version=$IMAGE_TAG" \
+                                --output "type=oci,tar=false,dest=$artifacts/$service.oci,name=taskflow-$service:$IMAGE_TAG" \
+                                --metadata-file "$artifacts/$service.meta.json"
+                        done
+                    '''
+                }
+
+                script {
+                    // The canonical local digest, as the builder reported it for
+                    // the artifact it just wrote. Every later check compares
+                    // against this value.
+                    for (service in env.SERVICES.split(' ')) {
+                        def metadata = readJSON file: "${env.ARTIFACT_DIR}/${service}.meta.json"
+                        def builtDigest = metadata['containerimage.digest']
+
+                        if (!builtDigest) {
+                            error("BuildKit reported no containerimage.digest for ${service}")
+                        }
+
+                        echo "built ${service} -> ${builtDigest}"
+                    }
+                }
+            }
+        }
+
+        stage('Scan') {
+            steps {
+                container('trivy') {
+                    // Full report first, at every severity, so nothing is hidden
+                    // from the console or from the archived JSON. This run does
+                    // not gate the build.
+                    sh '''
+                        set -eu
+
+                        artifacts="$WORKSPACE/$ARTIFACT_DIR"
+                        mkdir -p "$REPORT_DIR"
+                        trivy --version
+
+                        for service in $SERVICES; do
+                            echo "===== vulnerability report: $service ====="
+                            trivy image --quiet --scanners vuln \
+                                --input "$artifacts/$service.oci" \
+                                --format json --output "$REPORT_DIR/trivy-$service.json"
+
+                            # Rendered from the JSON that gets archived, so the
+                            # console and the artifact cannot disagree.
+                            trivy convert --format table "$REPORT_DIR/trivy-$service.json"
+                        done
+                    '''
+
+                    // Gate A. Unfixed findings are reported above but do not fail
+                    // the build: they come from the base image and have no
+                    // upstream fix, so gating on them would make every build red
+                    // without telling anyone anything new. A HIGH or CRITICAL
+                    // finding that does have a fix available is a different
+                    // matter and stops the build here.
+                    sh '''
+                        set -u
+                        artifacts="$WORKSPACE/$ARTIFACT_DIR"
+                        status=0
+
+                        for service in $SERVICES; do
+                            echo "===== gate A, fixable HIGH/CRITICAL: $service ====="
+                            trivy image --quiet --scanners vuln \
+                                --input "$artifacts/$service.oci" \
+                                --ignore-unfixed --severity HIGH,CRITICAL \
+                                --exit-code 1 --format table || status=1
+                        done
+
+                        exit $status
+                    '''
+
+                    // Gate B. Any secret found in an image fails the build. No
+                    // severity threshold, no bypass.
+                    sh '''
+                        set -u
+                        artifacts="$WORKSPACE/$ARTIFACT_DIR"
+                        status=0
+
+                        for service in $SERVICES; do
+                            echo "===== gate B, secrets: $service ====="
+                            trivy image --quiet --scanners secret \
+                                --input "$artifacts/$service.oci" \
+                                --exit-code 1 --format table || status=1
+                        done
+
+                        exit $status
+                    '''
+                }
+
+                script {
+                    // Findings that passed the gates because nothing upstream
+                    // fixes them are still real. Their count goes on the build
+                    // itself, so it is visible without opening the report.
+                    def remaining = []
+
+                    for (service in env.SERVICES.split(' ')) {
+                        def report = readJSON file: "${env.REPORT_DIR}/trivy-${service}.json"
+                        int unfixed = 0
+
+                        for (result in (report.Results ?: [])) {
+                            for (finding in (result.Vulnerabilities ?: [])) {
+                                def fixedVersion = finding.FixedVersion
+                                boolean hasFix =
+                                    fixedVersion != null && !fixedVersion.toString().isEmpty()
+
+                                if (!hasFix && finding.Severity in ['HIGH', 'CRITICAL']) {
+                                    unfixed++
+                                }
+                            }
+                        }
+
+                        echo "${service}: ${unfixed} unfixed HIGH/CRITICAL finding(s) remain"
+                        remaining.add("${service}=${unfixed}")
+                    }
+
+                    currentBuild.description =
+                        "${env.IMAGE_TAG} | unfixed HIGH/CRITICAL: ${remaining.join(' ')}"
+                }
+            }
+        }
+
+        stage('Push') {
+            steps {
+                container('aws') {
+                    // Every step in this stage starts with a shebang, which stops
+                    // Jenkins from running it under sh -x. The registry
+                    // authorization token is never passed on a command line and
+                    // never reaches the console.
+                    sh '''#!/bin/sh
+                        set -eu
+                        umask 077
+                        aws ecr get-login-password --region "$AWS_REGION" > "$ECR_TOKEN_FILE"
+                        echo "registry authorization token stored on the memory-backed volume"
+                    '''
+                }
+
+                container('skopeo') {
+                    sh '''#!/bin/sh
+                        set -eu
+                        umask 077
+                        skopeo login --username AWS --password-stdin \
+                            --authfile "$ECR_AUTH_FILE" \
+                            "$ECR_REGISTRY" < "$ECR_TOKEN_FILE"
+                    '''
+                }
+
+                container('aws') {
+                    // The token has been exchanged for an authfile and has no
+                    // further use, so it goes now rather than at the end of the
+                    // build.
+                    sh '''#!/bin/sh
+                        set -eu
+                        rm -f "$ECR_TOKEN_FILE"
+                        echo "registry authorization token removed"
+                    '''
+                }
+
+                container('skopeo') {
+                    // --preserve-digests is the point of this step: skopeo copies
+                    // the manifest as it stands and refuses rather than
+                    // re-encoding it if the destination would need a different
+                    // form. What reaches ECR is therefore the artifact Trivy
+                    // scanned, not a second build of the same source.
+                    sh '''#!/bin/sh
+                        set -u
+                        artifacts="$WORKSPACE/$ARTIFACT_DIR"
+                        status=0
+
+                        for service in $SERVICES; do
+                            echo "===== push: $service ====="
+                            skopeo copy --preserve-digests \
+                                --authfile "$ECR_AUTH_FILE" \
+                                "oci:$artifacts/$service.oci:$IMAGE_TAG" \
+                                "docker://$ECR_REGISTRY/$ECR_PREFIX-$service:$IMAGE_TAG" \
+                                || status=1
+                        done
+
+                        exit $status
+                    '''
+                }
+            }
+            post {
+                // The authfile is useless from here on: the digest read-back uses
+                // the AWS API rather than the registry protocol. Removed as soon
+                // as the stage ends, whether it succeeded or not.
+                always {
+                    script {
+                        discardRegistryAuth()
+                    }
+                }
+            }
+        }
+
+        stage('Verify Digest') {
+            steps {
+                script {
+                    for (service in env.SERVICES.split(' ')) {
+                        String repository = "${env.ECR_PREFIX}-${service}"
+
+                        def metadata = readJSON file: "${env.ARTIFACT_DIR}/${service}.meta.json"
+                        String builtDigest = metadata['containerimage.digest']
+
+                        String registryDigest = ''
+                        container('aws') {
+                            registryDigest = sh(
+                                returnStdout: true,
+                                script: 'aws ecr describe-images' +
+                                    " --region ${env.AWS_REGION}" +
+                                    " --repository-name ${repository}" +
+                                    " --image-ids imageTag=${env.IMAGE_TAG}" +
+                                    " --query 'imageDetails[0].imageDigest'" +
+                                    ' --output text',
+                            ).trim()
+                        }
+
+                        echo "${service} built    : ${builtDigest}"
+                        echo "${service} registry : ${registryDigest}"
+
+                        if (builtDigest != registryDigest) {
+                            error("Digest mismatch for ${service}: the image now in " +
+                                "${repository} is not the artifact that was built and scanned")
+                        }
+
+                        echo "${service} verified : digests match"
+
+                        // Recorded for the metadata stage, inside the workspace
+                        // the Pod destroys with itself.
+                        writeFile(
+                            file: "${env.ARTIFACT_DIR}/${service}.digest",
+                            text: registryDigest,
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('Publish Metadata') {
+            steps {
+                script {
+                    def images = [:]
+
+                    for (service in env.SERVICES.split(' ')) {
+                        String repository = "${env.ECR_PREFIX}-${service}"
+                        String digest = readFile(
+                            file: "${env.ARTIFACT_DIR}/${service}.digest",
+                        ).trim()
+
+                        // Every value is materialised as a plain String before it
+                        // goes into the map, so the serializer writes text rather
+                        // than the internals of a lazily interpolated value.
+                        images[service] = [
+                            repository : repository.toString(),
+                            // Tag and digest both recorded: the tag is how the
+                            // image was pushed, the digest is what a deployment
+                            // should actually reference.
+                            imageRef   : "${env.ECR_REGISTRY}/${repository}:${env.IMAGE_TAG}".toString(),
+                            digest     : digest.toString(),
+                            digestRef  : "${env.ECR_REGISTRY}/${repository}@${digest}".toString(),
+                            trivyReport: "${env.REPORT_DIR}/trivy-${service}.json".toString(),
+                        ]
+                    }
+
+                    String generatedAt = sh(
+                        returnStdout: true,
+                        script: 'date -u +%Y-%m-%dT%H:%M:%SZ',
+                    ).trim()
+
+                    // A stable, machine-readable schema: the values describe this
+                    // run, but their shape does not change between runs, so a
+                    // deployment job can read one key per service without having
+                    // to interpret the pipeline. No credential and no token
+                    // appears anywhere in it.
+                    writeJSON(
+                        file: 'image-manifest.json',
+                        pretty: 2,
+                        json: [
+                            schemaVersion: 1,
+                            generatedAt  : generatedAt,
+                            source: [
+                                gitCommit     : env.GIT_COMMIT_FULL,
+                                gitCommitShort: env.GIT_COMMIT_SHORT,
+                                gitBranch     : env.GIT_BRANCH_NAME,
+                                gitUrl        : env.GIT_URL_HTTPS,
+                            ],
+                            ci: [
+                                jenkinsJob : env.JOB_NAME,
+                                buildNumber: currentBuild.number,
+                                buildUrl   : env.BUILD_URL,
+                                runId      : env.RUN_ID,
+                            ],
+                            registry: env.ECR_REGISTRY,
+                            imageTag: env.IMAGE_TAG,
+                            images  : images,
+                        ],
+                    )
+                }
+
+                sh 'cat image-manifest.json'
+            }
+        }
+    }
+
+    post {
+        always {
+            // Archived even on a failed build, so a scan that failed a gate still
+            // leaves its report behind. The image manifest is fingerprinted so a
+            // later deployment can be traced back to the build that produced it.
+            archiveArtifacts(
+                artifacts: 'image-manifest.json, reports/trivy-*.json',
+                allowEmptyArchive: true,
+                fingerprint: true,
+            )
+        }
+
+        success {
+            echo "CI succeeded. Images published under tag ${env.IMAGE_TAG}; " +
+                'verified digests recorded in image-manifest.json.'
+        }
+
+        failure {
+            echo 'CI failed. No image from this run may be deployed.'
+        }
+
+        // Runs last, after the other post conditions, and on every outcome. Kept
+        // out of always so that neither the discard nor the workspace wipe
+        // depends on the archiving above having succeeded, and so that nothing is
+        // removed before the artifacts have been collected.
+        //
+        // The Agent Pod and its workspace are destroyed when the build ends in
+        // any case; this closes the window before that happens. The removal in
+        // the Push stage stays as the early one; this is the safety net for a run
+        // that failed before or during Push and never reached it.
+        cleanup {
+            script {
+                discardRegistryAuth()
+            }
+
+            cleanWs()
+        }
+    }
+}
+
+// Removes the registry authentication material from the memory-backed volume.
+// Best effort by design: it is called from post blocks that also run when the
+// Agent Pod never came up, and failing to reach a container that no longer exists
+// must not mask the real result of the build.
+void discardRegistryAuth() {
+    try {
+        container('skopeo') {
+            sh '''#!/bin/sh
+                rm -f "$ECR_AUTH_FILE"
+            '''
+        }
+        container('aws') {
+            sh '''#!/bin/sh
+                rm -f "$ECR_TOKEN_FILE"
+            '''
+        }
+        echo 'Registry authentication material discarded.'
+    } catch (Exception discardFailure) {
+        echo "Could not discard registry authentication material: ${discardFailure.message}"
+        echo 'The volume is memory-backed and is destroyed with the Agent Pod.'
+    }
+}

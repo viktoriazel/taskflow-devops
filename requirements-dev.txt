@@ -4,3 +4,6 @@
 pytest==9.1.1
 pytest-cov==7.1.0
 ruff==0.16.3
+
+# Reads the Kubernetes and Kustomize manifests in scripts/validate-repository.py.
+pyyaml==6.0.3

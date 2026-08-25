@@ -1,0 +1,5 @@
+# Trivy vulnerability exemptions.
+#
+# Deliberately empty: no finding is currently exempt from the CI image scan.
+# An entry here suppresses a real vulnerability, so each one needs a written
+# justification and an expiry date next to it before it is added.
