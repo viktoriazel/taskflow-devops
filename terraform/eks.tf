@@ -282,22 +282,22 @@ module "eks" {
   }
 
   addons = {
-    # Pinned to the version already running on the cluster; the module
-    # otherwise resolves the most recent compatible one, so a new CoreDNS build
-    # turns up as an in-place update inside an unrelated plan. addon_version
-    # alone is enough - the module prefers it over the version lookup. Only
-    # CoreDNS is pinned; the other add-ons keep the module default for now.
+    # Pin add-on versions so new compatible builds do not appear as unrelated
+    # plan updates. Upgrades remain explicit changes to this configuration.
     coredns = {
       addon_version = "v1.14.3-eksbuild.3"
     }
 
-    kube-proxy = {}
+    kube-proxy = {
+      addon_version = "v1.35.3-eksbuild.18"
+    }
 
     # before_compute on vpc-cni and eks-pod-identity-agent: both must be ready
     # before nodes join, or nodes come up NetworkPluginNotReady. The module
     # does not guarantee ordering between these two, so verify aws-node health
     # after apply.
     vpc-cni = {
+      addon_version  = "v1.23.0-eksbuild.1"
       before_compute = true
 
       pod_identity_association = [{
@@ -307,6 +307,7 @@ module "eks" {
     }
 
     eks-pod-identity-agent = {
+      addon_version  = "v1.4.0-eksbuild.1"
       before_compute = true
     }
 
@@ -317,6 +318,8 @@ module "eks" {
     # configuration_values left unset so the add-on does not create its own
     # cluster-default gp3 StorageClass; the project declares its own instead.
     aws-ebs-csi-driver = {
+      addon_version = "v1.63.1-eksbuild.1"
+
       pod_identity_association = [{
         role_arn        = aws_iam_role.ebs_csi_pod_identity.arn
         service_account = "ebs-csi-controller-sa"
