@@ -1,4 +1,12 @@
 # -----------------------------------------------------------------------------
+# Public ACM certificates. Two independent certificates, one per published
+# endpoint, so neither name's lifecycle is tied to the other:
+#
+#   taskflow.plus          public TaskFlow application
+#   jenkins.taskflow.plus  Jenkins webhook
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
 # ACM certificate for the Jenkins webhook endpoint
 #
 # HTTPS is required wherever Jenkins is exposed through an Ingress or
@@ -79,4 +87,58 @@ resource "aws_route53_record" "jenkins_cert_validation" {
 resource "aws_acm_certificate_validation" "jenkins" {
   certificate_arn         = aws_acm_certificate.jenkins.arn
   validation_record_fqdns = [for record in aws_route53_record.jenkins_cert_validation : record.fqdn]
+}
+
+# -----------------------------------------------------------------------------
+# ACM certificate for the TaskFlow application endpoint
+#
+# The apex name: taskflow.plus is the application's own public name. One
+# hostname only - no wildcard and no additional SAN, so adding a name later
+# means a new certificate rather than a broader key.
+#
+# TLS terminates at the ALB, so the private key never leaves ACM: no TLS
+# material is held in this repository, in a Kubernetes Secret, or anywhere in
+# the cluster, and there is nothing to rotate by hand.
+# -----------------------------------------------------------------------------
+
+resource "aws_acm_certificate" "app" {
+  domain_name       = var.domain_name
+  validation_method = "DNS"
+
+  tags = merge(local.common_tags, {
+    Name = var.domain_name
+  })
+
+  # ACM refuses to delete a certificate that is attached to a listener, so a
+  # change forcing a new certificate has to create the replacement first.
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Kept in the configuration permanently: ACM managed renewal works only while
+# this validation record stays resolvable.
+#
+# allow_overwrite is deliberately not set - the zone is not owned by this
+# configuration, so an unexpected pre-existing record should fail the apply
+# rather than be replaced silently.
+resource "aws_route53_record" "app_cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.app.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      type   = dvo.resource_record_type
+      record = dvo.resource_record_value
+    }
+  }
+
+  zone_id = data.aws_route53_zone.main.zone_id
+  name    = each.value.name
+  type    = each.value.type
+  records = [each.value.record]
+  ttl     = 60
+}
+
+resource "aws_acm_certificate_validation" "app" {
+  certificate_arn         = aws_acm_certificate.app.arn
+  validation_record_fqdns = [for record in aws_route53_record.app_cert_validation : record.fqdn]
 }

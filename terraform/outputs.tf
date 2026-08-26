@@ -119,8 +119,14 @@ output "aws_load_balancer_controller_role_arn" {
 # DNS / TLS
 # -----------------------------------------------------------------------------
 
-# Taken from the validation resource rather than from the certificate itself,
-# so consumers can only read the ARN once ACM has actually issued it.
+# The ARN exists as soon as the certificate request is created. Taking it from
+# the validation resource makes each output depend on ACM having issued the
+# certificate rather than merely having requested it.
+output "app_certificate_arn" {
+  description = "ARN of the ACM certificate for the public TaskFlow application endpoint"
+  value       = aws_acm_certificate_validation.app.certificate_arn
+}
+
 output "jenkins_certificate_arn" {
   description = "ARN of the ACM certificate for the Jenkins webhook endpoint, used by the future Ingress annotation"
   value       = aws_acm_certificate_validation.jenkins.certificate_arn
