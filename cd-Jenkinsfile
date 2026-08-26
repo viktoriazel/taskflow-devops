@@ -540,18 +540,30 @@ pipeline {
                     // Read from a list rather than by name: CD is granted list
                     // on Ingress and not get.
                     container('kubectl') {
-                        env.APP_ENDPOINT = sh(
+                        env.APP_RULE_HOST = sh(
+                            returnStdout: true,
+                            script: 'kubectl get ingress --namespace "$RELEASE_NAMESPACE"' +
+                                ' -o jsonpath=\'{.items[?(@.metadata.name=="frontend")].spec.rules[0].host}\'',
+                        ).trim()
+
+                        env.APP_LB_HOST = sh(
                             returnStdout: true,
                             script: 'kubectl get ingress --namespace "$RELEASE_NAMESPACE"' +
                                 ' -o jsonpath=\'{.items[?(@.metadata.name=="frontend")].status.loadBalancer.ingress[0].hostname}\'',
                         ).trim()
                     }
 
-                    if (!env.APP_ENDPOINT) {
-                        error('The frontend Ingress has no load balancer hostname yet.')
+                    // Use the Ingress rule host as the canonical HTTPS endpoint.
+                    // Without a rule host, fall back to the ALB hostname over HTTP.
+                    if (env.APP_RULE_HOST) {
+                        env.APP_BASE_URL = "https://${env.APP_RULE_HOST}"
+                        echo "endpoint : ${env.APP_BASE_URL} (canonical host, from the Ingress rule)"
+                    } else if (env.APP_LB_HOST) {
+                        env.APP_BASE_URL = "http://${env.APP_LB_HOST}"
+                        echo "endpoint : ${env.APP_BASE_URL} (no host on the Ingress rule; load balancer address)"
+                    } else {
+                        error('The frontend Ingress has neither a rule host nor a load balancer hostname.')
                     }
-
-                    echo "endpoint : http://${env.APP_ENDPOINT}"
                 }
             }
         }
@@ -561,6 +573,9 @@ pipeline {
         // the default agent container and the request needs no Kubernetes API
         // access, so no extra container is introduced for it. Retried because
         // ALB target registration lags a finished rollout.
+        //
+        // TLS verification stays enabled and redirects are not followed, so an
+        // HTTPS check must succeed directly on the canonical endpoint.
         stage('Smoke Test') {
             steps {
                 sh '''
@@ -568,7 +583,7 @@ pipeline {
                     attempts=8
 
                     for path in /ready /login; do
-                        url="http://$APP_ENDPOINT$path"
+                        url="$APP_BASE_URL$path"
                         attempt=1
 
                         while : ; do

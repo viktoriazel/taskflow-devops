@@ -10,10 +10,21 @@ metadata:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     alb.ingress.kubernetes.io/healthcheck-path: /ready
+    # Both listeners exist, but only one serves the application: the HTTP
+    # listener answers every request with a redirect to HTTPS.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    # TLS 1.2 and 1.3 only. The policy is named here rather than inherited, so
+    # the listener does not depend on the controller's implicit default.
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
 spec:
   ingressClassName: alb
   rules:
-    - http:
+    # The certificate is not named here: the controller resolves it from this
+    # host, so no account-specific ARN is tracked. TLS terminates at the load
+    # balancer, which is why there is no tls block and no certificate Secret.
+    - host: taskflow.plus
+      http:
         paths:
           - path: /
             pathType: Prefix
