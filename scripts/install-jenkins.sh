@@ -2,12 +2,11 @@
 #
 # install-jenkins.sh - install Jenkins into the cluster from this repository.
 #
-# Creates the namespace, the controller's RBAC and the agent identities and
-# permissions, checks that the externally managed admin Secret is in place,
-# verifies the pinned chart archive, and creates the Helm release from it.
+# Creates the namespace, the controller RBAC and the agent identities, checks
+# that the external Secrets are in place, verifies the pinned chart archive and
+# creates the Helm release from it.
 #
-# Safe to re-run: it is idempotent with respect to the Kubernetes and Helm
-# resources it manages.
+# Safe to re-run, and supports --dry-run.
 #
 # Dependencies: kubectl, helm, sha256sum.
 
@@ -25,14 +24,12 @@ usage() {
 Usage: $(basename "${BASH_SOURCE[0]}") [--dry-run] [-h|--help]
 
 Installs Jenkins from the configuration in jenkins/: the namespace, the
-controller ServiceAccount and RBAC, the CI and CD agent ServiceAccounts with
-the CD agent's namespaced permissions, and the Helm release built from the
-chart version pinned in jenkins/chart.env.
+controller and agent ServiceAccounts with their RBAC, and the Helm release
+built from the chart version pinned in jenkins/chart.env.
 
 Options:
   --dry-run   Run every check and render the release without changing the
-              cluster. Manifests are validated client-side and Helm runs with
-              --dry-run, so nothing is created or updated.
+              cluster. Nothing is created or updated.
   -h, --help  Show this help.
 
 Environment:
@@ -42,12 +39,17 @@ Environment:
 
 Exit codes: 0 ok, 1 error, 2 usage.
 
-Prerequisites, neither of which this script creates:
-  - The Secret holding the Jenkins admin credentials must already exist in the
-    Jenkins namespace. It is never stored in Git; create it from
-    jenkins/examples/secret-jenkins-admin.example.yaml.
-  - The application namespace devops-app must already exist: the CD agent's
-    Role and RoleBinding are created in it.
+Prerequisites, none of which this script creates:
+  - The Jenkins admin Secret, in the Jenkins namespace. It is never stored in
+    Git; create it from jenkins/examples/secret-jenkins-admin.example.yaml.
+  - The GitHub webhook Secret, in the same namespace, created the same way from
+    jenkins/examples/secret-github-webhook.example.yaml. The controller mounts
+    it and does not start without it.
+  - The devops-app namespace, where the CD agent's Role is created.
+
+Both Secrets live in the namespace this script creates from
+jenkins/namespace.yaml. On an empty cluster, apply that manifest, create the two
+Secrets in it, then run this script.
 EOF
 }
 
@@ -80,8 +82,7 @@ require_expected_cluster
 # --------------------------------------------------------------------------
 # Namespace
 #
-# Managed from its manifest so its labels and lifecycle stay explicit and
-# independent of Helm.
+# Managed from its manifest, so its labels and lifecycle stay outside Helm.
 # --------------------------------------------------------------------------
 
 step "Namespace"
@@ -96,20 +97,23 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# Admin credentials
+# External Secrets
 #
-# The externally managed Secret is validated before the release is installed.
+# Both Secrets are checked before the release is installed. The webhook Secret
+# is checked here too, because values.yaml mounts it into the controller and the
+# Pod does not start without it.
 # --------------------------------------------------------------------------
 
-step "Admin credentials"
+step "External Secrets"
 
 require_admin_secret "$JENKINS_NAMESPACE"
+require_webhook_secret "$JENKINS_NAMESPACE"
 
 # --------------------------------------------------------------------------
 # Controller RBAC
 #
-# Custom RBAC is applied here because chart-generated RBAC is disabled in
-# values.yaml (rbac.create: false).
+# Applied here because the chart's own RBAC is disabled in values.yaml
+# (rbac.create: false).
 # --------------------------------------------------------------------------
 
 step "Controller RBAC"
@@ -123,9 +127,8 @@ fi
 # --------------------------------------------------------------------------
 # Agent identities and permissions
 #
-# The agent ServiceAccounts must exist before a Pod template can reference one.
-# The CD Role is created in the application namespace, so that namespace is a
-# prerequisite rather than something this script creates.
+# The agent ServiceAccounts must exist before a Pod template can use one. The CD
+# Role is created in the application namespace, which has to exist already.
 # --------------------------------------------------------------------------
 
 step "Agent RBAC"
@@ -151,12 +154,12 @@ pull_and_verify_chart
 # --------------------------------------------------------------------------
 # Release
 #
-# --wait so the script's exit status reflects whether Jenkins actually came up.
+# --wait so the exit status reflects whether Jenkins actually came up.
 #
-# Deliberately not --atomic: on a failed first install its automatic rollback
-# uninstalls the release, taking the freshly created PVC and its EBS-backed data
-# with it (taskflow-gp3 reclaims on delete). A failed install is left in place
-# to be inspected; removing it is an explicit call to uninstall-jenkins.sh.
+# Not --atomic on purpose: after a failed first install its rollback would
+# uninstall the release and delete the new PVC with its data (taskflow-gp3
+# reclaims on delete). A failed install is left in place to be inspected;
+# removing it is a call to uninstall-jenkins.sh.
 # --------------------------------------------------------------------------
 
 step "Helm release"

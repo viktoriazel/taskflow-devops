@@ -1,23 +1,19 @@
 # Pipeline job definitions as code.
 #
-# The Job DSL plugin contributes the "jobs" root element below, so these
-# definitions are applied by the same Configuration as Code reload that applies
-# the rest of jenkins/jcasc/. Nothing here is configured through the Jenkins UI.
+# The Job DSL plugin adds the "jobs" element below, so these jobs are applied by
+# the same Configuration as Code reload as the rest of jenkins/jcasc/. Nothing
+# here is set up through the Jenkins UI.
 #
-# The DSL regenerates each job's configuration on every reload, so a job is
-# created once and afterwards updated in place: repeated runs cannot leave a
-# second copy behind. Because the generated configuration replaces the whole
-# job, only settings that must exist *before* a build starts are declared here.
-# Everything a Declarative pipeline applies at the start of each run - options,
-# timeouts, build retention - stays in its Jenkinsfile and is not duplicated.
+# Every reload regenerates the job configuration, so only settings that must
+# exist before a build starts are declared here. The pipeline logic itself lives
+# in the Jenkinsfile of each job.
 #
-# No credential appears here and none is required: the repository is public and
-# both jobs check it out anonymously.
+# No credentials are needed: the repository is public and both jobs check it out
+# anonymously.
 
 jobs:
   - script: |
-      // Both jobs read their pipeline from the same repository and the same
-      // branch. Set once here: this is the only place either is chosen.
+      // Both jobs use the same repository and the same branch, set once here.
       String repositoryUrl = 'https://github.com/viktoriazel/taskflow-devops.git'
       String scmBranch     = 'jenkins-cicd'
 
@@ -26,6 +22,16 @@ jobs:
               'Builds, scans and publishes the three application images. ' +
               'Defined by ci-Jenkinsfile; runs on a dynamic CI agent and deploys nothing.'
           )
+
+          // A push to the branch above arrives as a GitHub webhook and starts a
+          // build. The trigger has to be on the job: a pipeline only registers
+          // its own triggers once it is already running.
+          //
+          // Only this job has a trigger. Deployments are started on purpose,
+          // from an image CI has already published.
+          triggers {
+              githubPush()
+          }
 
           definition {
               cpsScm {
@@ -40,10 +46,8 @@ jobs:
 
                   scriptPath('ci-Jenkinsfile')
 
-                  // Fetches the pipeline file alone. A full checkout here would
-                  // clone the repository onto the controller, which carries no
-                  // executors and runs no build work; the pipeline checks the
-                  // source out on its own agent instead.
+                  // Fetches only the pipeline file. The controller runs no build
+                  // work, so the pipeline checks out the source on its own agent.
                   lightweight(true)
               }
           }
@@ -55,11 +59,9 @@ jobs:
               'Defined by cd-Jenkinsfile; builds nothing.'
           )
 
-          // Declared here only so the job is parameterised before its first
-          // build. A Declarative pipeline registers its parameters while it
-          // runs, which is too late for the run that has to supply them, and
-          // this generated configuration would drop them again on the next
-          // reload. During a build, cd-Jenkinsfile is what is in force.
+          // Declared here so the job has its parameters before the first build.
+          // A pipeline only registers parameters while it runs, which is too
+          // late for that first run.
           parameters {
               stringParam(
                   'IMAGE_TAG', '',

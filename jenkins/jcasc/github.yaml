@@ -1,12 +1,19 @@
 # GitHub plugin configuration as code.
 #
-# The configs list is empty on purpose: with no GitHub server configuration
-# Jenkins does not register or modify webhooks through the GitHub API, so this
-# installation needs no GitHub API token.
+# configs is empty on purpose. Jenkins does not manage webhooks through the
+# GitHub API, so it needs no GitHub API token. The webhook is created on the
+# GitHub side, and Jenkins only receives its deliveries.
 #
-# Webhook secret configuration is added only once its Jenkins credential exists.
-# This file would then carry the credential id alone, never the secret value.
+# hookSecretConfigs holds the id of the Jenkins credential with the shared
+# secret, which is used to check the signature on each delivery.
 
 unclassified:
   githubpluginconfig:
     configs: []
+
+    # The credential is defined in jenkins/jcasc/credentials.yaml.
+    hookSecretConfigs:
+      - credentialsId: "github-webhook-secret"
+        # Set explicitly to match the X-Hub-Signature-256 header GitHub sends.
+        # The GitHub webhook must use the same secret.
+        signatureAlgorithm: "SHA256"

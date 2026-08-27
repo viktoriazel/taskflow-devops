@@ -1,8 +1,7 @@
 # Jenkins controller values for the official jenkins/jenkins chart.
 #
-# Every Helm override lives here rather than in an inline `--set` or the Jenkins
-# UI. JCasC is deliberately not embedded in this file; it is supplied from
-# jenkins/jcasc/ as reviewable YAML. The chart version is pinned in
+# All Helm overrides live here, not in `--set` flags or the Jenkins UI. The
+# JCasC config comes from jenkins/jcasc/, and the chart version is pinned in
 # jenkins/chart.env.
 
 controller:
@@ -11,25 +10,30 @@ controller:
     registry: docker.io
     repository: jenkins/jenkins
     tag: "2.568.2-jdk21"
-    # Reuses the image already on the node; this chart cannot pin a digest.
+    # Reuse the image already on the node; this chart cannot pin a digest.
     pullPolicy: IfNotPresent
 
-  # Credentials come from the jenkins-admin Secret, created out of band and never
-  # stored in Git. createSecret stays true only because the chart gates the
-  # projected credential mount on it; existingSecret suppresses its own password.
+  # Admin credentials come from the jenkins-admin Secret, which is created
+  # separately and never committed to Git. createSecret must stay true or the
+  # chart does not mount them.
   admin:
     existingSecret: jenkins-admin
     createSecret: true
     userKey: jenkins-admin-user
     passwordKey: jenkins-admin-password
 
-  # Pinned to exact versions, with latest resolution disabled below, so repeated
-  # installs do not drift. The list is kept to plugins actually used.
+  # Mounts the webhook Secret next to the admin credentials. JCasC reads it as
+  # ${jenkins-github-webhook-secret}. The Pod does not start without it.
+  additionalExistingSecrets:
+    - name: jenkins-github-webhook
+      keyName: secret
+
+  # Pinned versions so repeated installs do not drift. Only the plugins actually
+  # used are listed.
   installPlugins:
     - kubernetes:4540.v612369217f87
     - workflow-aggregator:608.v67378e9d3db_1
-    # Pinned to stop the Declarative suite resolving into a version split that
-    # the Kubernetes plugin's requirements leave unloadable.
+    # Pinned to a version that works with the Kubernetes plugin's requirements.
     - pipeline-model-definition:2.2293.v6e7193cec599
     - git:5.10.1
     - github:1.47.0
@@ -43,26 +47,29 @@ controller:
     - timestamper:1.30
     - ws-cleanup:0.49
 
-  # Chart default is true, which resolves dependencies to latest at install time:
-  # two installs from this file would differ.
+  # Chart default is true, which pulls the latest dependencies at install time.
   installLatestPlugins: false
 
-  # Guards the list above against silently resolving to "latest".
+  # Keeps the pinned versions above from being upgraded to the latest ones.
   installLatestSpecifiedPlugins: false
 
-  # Keeps the persistent plugin directory intact instead of clearing it. A pinned
-  # version newer than the installed one still replaces it on restart; moving a
-  # pin backwards needs its own deliberate procedure.
+  # Keeps the plugin directory on the volume instead of clearing it. A newer
+  # pinned version still replaces the installed one on restart.
   overwritePlugins: false
 
   JCasC:
-    # jenkins/jcasc/ is the single source of truth for system settings, the
-    # Kubernetes cloud and the agent templates. The chart's own JCasC would emit
-    # a competing jenkins.clouds block, so it is off.
+    # jenkins/jcasc/ holds all system settings, the Kubernetes cloud and the
+    # agent templates. The chart's own JCasC would conflict with it.
     defaultConfig: false
 
-  # The chart's 50m/256Mi under-reserves for a controller. CPU may oversubscribe:
-  # contention costs throttling, not a killed controller.
+  # Fail the config load on an unresolved reference instead of substituting an
+  # empty value.
+  containerEnv:
+    - name: CASC_STRICT_SECRET_RESOLUTION
+      value: "true"
+
+  # The chart default of 50m/256Mi is too small for a controller. The CPU limit
+  # can be oversubscribed: under load the controller is throttled, not killed.
   resources:
     requests:
       cpu: 500m
@@ -71,8 +78,8 @@ controller:
       cpu: 1500m
       memory: 3Gi
 
-  # fsGroup gives the non-root uid ownership of the PVC; OnRootMismatch avoids a
-  # recursive chown of the volume on every start.
+  # fsGroup gives the non-root user access to the PVC, and OnRootMismatch skips
+  # resetting ownership of the whole volume on every start.
   podSecurityContextOverride:
     runAsUser: 1000
     runAsGroup: 1000
@@ -82,8 +89,8 @@ controller:
     seccompProfile:
       type: RuntimeDefault
 
-  # Non-root with a read-only root filesystem - every path Jenkins writes to is a
-  # mounted volume - and no Linux capabilities.
+  # Non-root, read-only root filesystem (Jenkins only writes to mounted volumes)
+  # and no Linux capabilities.
   containerSecurityContext:
     runAsUser: 1000
     runAsGroup: 1000
@@ -96,9 +103,8 @@ controller:
     seccompProfile:
       type: RuntimeDefault
 
-  # startupProbe absorbs slow first-boot plugin loading and gates the other two.
-  # Liveness uses an endpoint that answers without authentication; readiness uses
-  # the one Service traffic actually reaches.
+  # startupProbe covers the slow first boot while plugins load; liveness and
+  # readiness only start once it passes.
   probes:
     startupProbe:
       httpGet:
@@ -125,7 +131,7 @@ controller:
       successThreshold: 1
       failureThreshold: 3
 
-  # The JCasC reload sidecar ships with neither resources nor a security context.
+  # The JCasC reload sidecar has no resources or security context by default.
   sidecars:
     configAutoReload:
       resources:
@@ -145,7 +151,7 @@ controller:
         seccompProfile:
           type: RuntimeDefault
 
-  # The dedicated Jenkins node, which carries a matching taint.
+  # Run on the dedicated Jenkins node, which carries a matching taint.
   nodeSelector:
     workload: jenkins
 
@@ -155,7 +161,7 @@ controller:
       value: jenkins
       effect: NoSchedule
 
-# Its own named identity, so the controller stays distinguishable from the agent
+# The controller has its own ServiceAccount, kept separate from the agent
 # identities in RBAC and audit logs.
 serviceAccount:
   create: true
@@ -164,21 +170,21 @@ serviceAccount:
   # The controller needs this token to manage dynamic agent Pods.
   automountServiceAccountToken: true
 
-# The chart's RBAC is broader than the controller needs; jenkins/rbac/controller.yaml
-# defines a narrower Role, applied before the release.
+# The chart's RBAC is wider than the controller needs. jenkins/rbac/controller.yaml
+# defines a smaller Role and is applied before the release.
 rbac:
   create: false
 
-# Jenkins home must survive Pod replacement: plugins, job configuration, the
-# credentials store and build history.
+# Jenkins home must survive Pod replacement: plugins, job configuration,
+# credentials and build history.
 persistence:
   enabled: true
 
-  # Named explicitly rather than relying on whichever StorageClass is default.
+  # Set explicitly instead of using whichever StorageClass is the default.
   storageClass: taskflow-gp3
 
   # EBS attaches to one node at a time, which is all a single controller needs.
   accessMode: ReadWriteOnce
 
-  # gp3 can be expanded in place but never shrunk.
+  # gp3 volumes can grow but never shrink.
   size: 20Gi

@@ -1,0 +1,58 @@
+# Public entry point for the GitHub webhook.
+#
+# One host, one path. Everything else falls through to the load balancer's
+# default action, so the Jenkins UI has no route from the internet and stays
+# reachable only through kubectl port-forward.
+#
+# The webhook gets its own load balancer, because the source restriction below
+# applies to the whole load balancer and the application endpoint must stay open
+# to everyone.
+#
+# The shared secret configured in Jenkins is what authenticates a delivery. The
+# source restriction is a second, independent control.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jenkins-webhook
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: webhook
+    app.kubernetes.io/part-of: taskflow
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+
+    # The webhook path accepts POST only, so it cannot be used as a health
+    # check. /login answers without login and is what the readiness probe uses.
+    alb.ingress.kubernetes.io/healthcheck-path: /login
+
+    # Both listeners exist, but the HTTP one only redirects to HTTPS.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    # TLS 1.2 and 1.3 only. Set explicitly instead of relying on the default.
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+
+    # GitHub's published webhook source ranges.
+    alb.ingress.kubernetes.io/inbound-cidrs: 192.30.252.0/22,185.199.108.0/22,140.82.112.0/20,143.55.64.0/20
+
+    # IPv4 only, so the ranges above cover every source. A dual-stack load
+    # balancer would leave IPv6 traffic unfiltered.
+    alb.ingress.kubernetes.io/ip-address-type: ipv4
+spec:
+  ingressClassName: alb
+  rules:
+    # The certificate is picked by this host name, so no ARN is tracked here.
+    # TLS ends at the load balancer, so there is no tls block.
+    - host: jenkins.taskflow.plus
+      http:
+        paths:
+          # Exact, not Prefix: this is a single fixed path, and a prefix would
+          # publish everything below it too.
+          - path: /github-webhook/
+            pathType: Exact
+            backend:
+              service:
+                name: jenkins
+                port:
+                  number: 8080

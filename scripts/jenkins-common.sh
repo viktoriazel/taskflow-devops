@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# jenkins-common.sh - helper library sourced by the Jenkins lifecycle scripts.
+# jenkins-common.sh - shared library sourced by the Jenkins lifecycle scripts.
 #
-# Centralizes the shared validation and verification logic so install, configure
-# and verify behave identically.
+# Holds the validation and verification logic used by install, configure and
+# verify, so all three behave the same way.
 
-# Guard against being run directly - it would do nothing useful.
+# This file is a library; running it directly does nothing useful.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     printf 'ERROR: %s is a library and must be sourced, not executed.\n' "$(basename "${BASH_SOURCE[0]}")" >&2
     exit 2
@@ -31,39 +31,35 @@ REPO_ROOT="$(cd "${JENKINS_SCRIPT_DIR}/.." && pwd)"
 JENKINS_DIR="${REPO_ROOT}/jenkins"
 CHART_ENV="${JENKINS_DIR}/chart.env"
 VALUES_FILE="${JENKINS_DIR}/values.yaml"
-# Consumed by the scripts that source this file, not here.
+# Used by the scripts that source this file.
 # shellcheck disable=SC2034
 NAMESPACE_MANIFEST="${JENKINS_DIR}/namespace.yaml"
 # shellcheck disable=SC2034
 RBAC_MANIFEST="${JENKINS_DIR}/rbac/controller.yaml"
 
-# Identities and permissions for the dynamic agents. Applied after the
-# controller RBAC and before the release, so a Pod template always has its
-# ServiceAccount. The CD Role lives in the application namespace, which is why
-# that namespace is a prerequisite - see require_app_namespace below.
+# Identities and permissions for the dynamic agents, applied before the release
+# so every agent Pod has its ServiceAccount. The CD Role is created in the
+# application namespace, so that namespace has to exist first.
 # shellcheck disable=SC2034
 AGENT_RBAC_MANIFESTS=(
     "${JENKINS_DIR}/rbac/agent-serviceaccounts.yaml"
     "${JENKINS_DIR}/rbac/cd-agent-rbac.yaml"
 )
 
-# The application namespace the CD Role is created in. Fixed rather than
-# overridable: jenkins/rbac/cd-agent-rbac.yaml names this namespace directly, so
-# an override would only check one namespace while the manifest wrote to another.
+# The namespace the CD Role is created in. Not overridable, because
+# jenkins/rbac/cd-agent-rbac.yaml names this namespace directly.
 APP_NAMESPACE="devops-app"
 
 # --------------------------------------------------------------------------
 # JCasC
 #
-# Jenkins Configuration as Code lives in jenkins/jcasc/*.yaml rather than inside
-# values.yaml, so it stays lintable YAML. Helm receives each file with
-# --set-file, which inserts the file's contents verbatim as a string value and
-# never parses it. One list, used identically by install and configure, so the
-# two cannot drift apart.
+# The Jenkins configuration lives in jenkins/jcasc/*.yaml instead of inside
+# values.yaml, so it stays plain YAML. Helm passes each file with --set-file,
+# which inserts its contents as a string. The files are listed once here, so
+# install and configure cannot drift apart.
 #
-# Each key becomes a ConfigMap and a file name on the controller under
-# /var/jenkins_home/casc_configs, so keys are restricted to RFC 1123 label
-# characters.
+# Each key also becomes a file name on the controller, so keys use only
+# lowercase letters, digits and dashes.
 # --------------------------------------------------------------------------
 
 JCASC_DIR="${JENKINS_DIR}/jcasc"
@@ -71,20 +67,18 @@ JCASC_DIR="${JENKINS_DIR}/jcasc"
 # key:filename
 JCASC_FILES=(
     "taskflow-system:system.yaml"
+    "taskflow-credentials:credentials.yaml"
     "taskflow-clouds:clouds.yaml"
     "taskflow-github:github.yaml"
     "taskflow-jobs:jobs.yaml"
 )
 
-# The job definitions, named separately because create-jobs.sh reads the SCM
-# coordinates out of this file as well as shipping it as JCasC.
+# Named separately because create-jobs.sh also reads the SCM settings from it.
 # shellcheck disable=SC2034
 JOBS_FILE="${JCASC_DIR}/jobs.yaml"
 
-# Fills JCASC_SET_FILE_ARGS with the --set-file arguments for the JCasC files.
-# Fails if any file is missing: a partially applied JCasC is worse than a
-# refused upgrade, because Jenkins would come up without its Kubernetes cloud
-# and silently accept no builds.
+# Builds the --set-file arguments for the JCasC files above. Fails if a file is
+# missing, so Jenkins never starts with only part of its configuration.
 JCASC_SET_FILE_ARGS=()
 
 jcasc_set_file_args() {
@@ -104,8 +98,7 @@ jcasc_set_file_args() {
     done
 }
 
-# The CD Role is namespaced to the application namespace, so that namespace has
-# to exist before the RoleBinding can be created.
+# The CD Role is namespaced, so the application namespace must exist first.
 require_app_namespace() {
     kubectl get namespace "$APP_NAMESPACE" -o name >/dev/null 2>&1 \
         || fail "namespace '${APP_NAMESPACE}' does not exist.
@@ -113,14 +106,18 @@ require_app_namespace() {
          ${JENKINS_SCRIPT_DIR}/bootstrap-app.sh"
 }
 
-# The admin credentials are an external prerequisite: an operator creates this
-# Secret from jenkins/examples/secret-jenkins-admin.example.yaml. No script here
-# creates the Secret or invents a password, and no credential value is ever
-# printed or persisted by these scripts.
+# Both Secrets are external prerequisites, created from the templates in
+# jenkins/examples/. No script here creates a Secret, and no secret value is
+# ever printed.
 ADMIN_SECRET_NAME="jenkins-admin"
 ADMIN_SECRET_KEYS=(jenkins-admin-user jenkins-admin-password)
 
-# Refuse to run against an unexpected cluster; overridable for another
+# The shared secret for GitHub webhook signatures. jenkins/values.yaml mounts it
+# into the controller, so the controller does not start without it.
+WEBHOOK_SECRET_NAME="jenkins-github-webhook"
+WEBHOOK_SECRET_KEYS=(secret)
+
+# Guard against running in the wrong cluster. Overridable for another
 # environment built from the same configuration.
 EXPECTED_CLUSTER_NAME="${EXPECTED_CLUSTER_NAME:-taskflow-dev-eks}"
 
@@ -157,7 +154,7 @@ require_commands() {
     fi
 }
 
-# Guard against the lifecycle scripts operating on an unexpected cluster.
+# Refuse to run if the current kubectl context points at another cluster.
 require_expected_cluster() {
     local context cluster
 
@@ -172,8 +169,7 @@ require_expected_cluster() {
     info "context: ${context}"
     info "cluster: ${cluster}"
 
-    # The expected cluster may appear as a bare name or as an ARN-style
-    # reference ending in that name; nothing else is accepted.
+    # The cluster may appear as a bare name or as an ARN ending in that name.
     if [[ "$cluster" != "$EXPECTED_CLUSTER_NAME" && "$cluster" != */"$EXPECTED_CLUSTER_NAME" ]]; then
         fail "active cluster '${cluster}' is not '${EXPECTED_CLUSTER_NAME}'.
        Refusing to touch a cluster this repository does not describe.
@@ -189,35 +185,39 @@ require_repo_files() {
 }
 
 # --------------------------------------------------------------------------
-# Admin Secret preflight
+# External Secret preflight
 #
-# Confirms the Secret exists and that both required keys are present and
-# non-empty. The Go template below emits only key names and value lengths into
-# the shell, so the credential values themselves never reach stdout, stderr or
-# a log.
+# Checks that a Secret exists and that every required key is present and not
+# empty. The Go template below returns only key names and value lengths, so no
+# secret value is ever printed.
+#
+# Arguments: namespace, Secret name, template file under jenkins/examples/, then
+# the required keys.
 # --------------------------------------------------------------------------
 
-require_admin_secret() {
-    local ns="$1"
-    local keys_and_lengths key length found missing=()
+require_external_secret() {
+    local ns="$1" secret_name="$2" example="$3"
+    shift 3
+    local required_keys=("$@")
+    local keys_and_lengths key found_key length found missing=()
 
-    kubectl get secret "$ADMIN_SECRET_NAME" -n "$ns" -o name >/dev/null 2>&1 \
-        || fail "Secret '${ADMIN_SECRET_NAME}' not found in namespace '${ns}'.
-       It holds the Jenkins admin credentials, is deliberately not tracked in
-       Git, and is not created by this script. Create it from the template:
-         ${JENKINS_DIR}/examples/secret-jenkins-admin.example.yaml"
+    kubectl get secret "$secret_name" -n "$ns" -o name >/dev/null 2>&1 \
+        || fail "Secret '${secret_name}' not found in namespace '${ns}'.
+       It is created out of band, is deliberately not tracked in Git, and is not
+       created by this script. Create it from the template:
+         ${JENKINS_DIR}/examples/${example}"
 
-    # Single-quoted: $k and $v belong to the Go template, not to the shell.
+    # Single-quoted so $k and $v stay in the Go template.
     # shellcheck disable=SC2016
-    keys_and_lengths="$(kubectl get secret "$ADMIN_SECRET_NAME" -n "$ns" \
+    keys_and_lengths="$(kubectl get secret "$secret_name" -n "$ns" \
         -o go-template='{{range $k, $v := .data}}{{$k}} {{len $v}}{{"\n"}}{{end}}')"
 
-    for key in "${ADMIN_SECRET_KEYS[@]}"; do
+    for key in "${required_keys[@]}"; do
         found=false
-        while read -r name length; do
-            [[ "$name" == "$key" ]] || continue
+        while read -r found_key length; do
+            [[ "$found_key" == "$key" ]] || continue
             found=true
-            (( length > 0 )) || fail "Secret '${ADMIN_SECRET_NAME}' has key '${key}' but it is empty."
+            (( length > 0 )) || fail "Secret '${secret_name}' has key '${key}' but it is empty."
         done <<< "$keys_and_lengths"
         if [[ "$found" == true ]]; then
             info "key present and non-empty: ${key}"
@@ -227,18 +227,27 @@ require_admin_secret() {
     done
 
     if (( ${#missing[@]} > 0 )); then
-        fail "Secret '${ADMIN_SECRET_NAME}' is missing required key(s): ${missing[*]}
-       Expected keys are set in ${VALUES_FILE} as controller.admin.userKey and
-       controller.admin.passwordKey."
+        fail "Secret '${secret_name}' is missing required key(s): ${missing[*]}
+       The key names the release expects are set in ${VALUES_FILE}."
     fi
+}
+
+# Wrappers for the two required Secrets, so call sites read clearly.
+require_admin_secret() {
+    require_external_secret "$1" "$ADMIN_SECRET_NAME" \
+        secret-jenkins-admin.example.yaml "${ADMIN_SECRET_KEYS[@]}"
+}
+
+require_webhook_secret() {
+    require_external_secret "$1" "$WEBHOOK_SECRET_NAME" \
+        secret-github-webhook.example.yaml "${WEBHOOK_SECRET_KEYS[@]}"
 }
 
 # --------------------------------------------------------------------------
 # Chart artifact verification
 #
-# Downloads the pinned chart, verifies its sha256 against jenkins/chart.env and
-# exports the path to that file, so Helm installs the exact verified artifact
-# instead of resolving the chart again. --repo is used instead of
+# Downloads the pinned chart and checks its sha256 against jenkins/chart.env, so
+# Helm installs exactly the verified file. --repo is used instead of
 # 'helm repo add' to leave the operator's Helm configuration untouched.
 # --------------------------------------------------------------------------
 

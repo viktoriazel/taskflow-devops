@@ -2,13 +2,11 @@
 #
 # verify-jenkins.sh - check that the running Jenkins matches this repository.
 #
-# Read-only. Every check is a kubectl or helm query, or a command that only
-# reads inside the controller container; nothing is created, changed or
-# deleted. Exits non-zero if any check fails, so it can gate a pipeline or a
-# manual install.
+# Read-only: every check is a query, and nothing is created or changed. Exits
+# non-zero if any check fails, so it can gate a pipeline or a manual install.
 #
-# No credential value is ever printed or exposed. The admin Secret is checked
-# for the presence and non-emptiness of its required keys only.
+# No secret value is ever printed. Secrets are checked only for the presence of
+# their required keys.
 #
 # Dependencies: kubectl, helm.
 
@@ -62,12 +60,11 @@ expect_eq() {
     fi
 }
 
-# kubectl query for an object that may legitimately be absent: the empty result
-# is what the caller then reports as a failure or an absence.
+# kubectl query for an object that may legitimately be absent; the caller
+# decides what an empty result means.
 #
-# Never use it for a security assertion whose success condition is empty output.
-# It discards the exit status, so a query that could not run at all would be
-# indistinguishable from a clean result.
+# Never use it for a check that passes on empty output: kq drops the exit
+# status, so a query that could not run would look like a clean result.
 kq() { kubectl "$@" 2>/dev/null || true; }
 
 # --------------------------------------------------------------------------
@@ -81,8 +78,7 @@ load_chart_env
 require_repo_files "$VALUES_FILE"
 require_expected_cluster
 
-# The expected controller image is read from the repository rather than
-# hardcoded here, so this script cannot drift away from what we install.
+# Read from the repository, so this script cannot drift from what is installed.
 IMAGE_REGISTRY="$(awk '/^  image:/{f=1} f && /^    registry:/{print $2; exit}'   "$VALUES_FILE")"
 IMAGE_REPOSITORY="$(awk '/^  image:/{f=1} f && /^    repository:/{print $2; exit}' "$VALUES_FILE")"
 IMAGE_TAG="$(awk '/^  image:/{f=1} f && /^    tag:/{gsub(/"/, "", $2); print $2; exit}' "$VALUES_FILE")"
@@ -148,8 +144,8 @@ if [[ -n "$POD" ]]; then
         -o jsonpath='{.spec.containers[?(@.name=="jenkins")].image}')"
     expect_eq "controller image" "$EXPECTED_IMAGE" "$actual_image"
 
-    # No image anywhere in the Pod may float on a mutable tag. Queried without kq
-    # so that a query that fails is reported as such, not as an absent ':latest'.
+    # No image in the Pod may use a mutable tag. Not kq: a failed query must be
+    # reported, not read as "no ':latest' found".
     if ! pod_images="$(kubectl get pod "$POD" -n "$JENKINS_NAMESPACE" -o jsonpath='{..image}' 2>/dev/null)"; then
         bad "could not read the container images of Pod '${POD}' - ':latest' was not verified"
     elif [[ "$pod_images" == *:latest* ]]; then
@@ -158,7 +154,7 @@ if [[ -n "$POD" ]]; then
         ok "no ':latest' image in the controller Pod"
     fi
 
-    # Scheduling: the Pod must sit on the dedicated Jenkins node group.
+    # The Pod must run on the dedicated Jenkins node.
     node="$(kq get pod "$POD" -n "$JENKINS_NAMESPACE" -o jsonpath='{.spec.nodeName}')"
     if [[ -n "$node" ]]; then
         node_workload="$(kq get node "$node" -o jsonpath='{.metadata.labels.workload}')"
@@ -208,8 +204,8 @@ fi
 # --------------------------------------------------------------------------
 # Service
 #
-# ClusterIP is the intended exposure: the UI is reached with port-forward, not
-# published. A LoadBalancer or NodePort here would mean the boundary moved.
+# ClusterIP on purpose: the UI is reached with port-forward, not published.
+# A LoadBalancer or NodePort here would mean the boundary moved.
 # --------------------------------------------------------------------------
 
 step "Service"
@@ -251,16 +247,12 @@ for role in jenkins-controller-schedule-agents jenkins-controller-casc-reload; d
     fi
 done
 
-# The controller must hold no cluster-scoped rights. Anything binding this
-# ServiceAccount at cluster level is a boundary violation, whoever created it.
+# The controller must have no cluster-scoped permissions. The template checks
+# every subject and matches on kind, namespace and name, so a same-named User,
+# Group or account from another namespace is not mistaken for it. Not kq: a
+# failed listing must fail the check.
 #
-# Every subject of every binding is examined and matched on kind, namespace and
-# name, so a match is not missed because it is not the first subject and a
-# same-named User, Group or foreign-namespace account is not mistaken for one.
-# Run without kq: failing to list the bindings is a failed check, never a clean
-# result.
-#
-# Single-quoted: $name belongs to the Go template, not to the shell.
+# Single-quoted so $name stays in the Go template.
 # shellcheck disable=SC2016
 crb_template='{{range .items}}{{$name := .metadata.name}}{{range .subjects}}{{if eq .kind "ServiceAccount"}}{{if eq .namespace "jenkins"}}{{if eq .name "jenkins-controller"}}{{$name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}{{end}}'
 
@@ -275,8 +267,8 @@ fi
 # --------------------------------------------------------------------------
 # Admin credentials
 #
-# Presence and non-emptiness only. Run in a subshell so a missing Secret is
-# recorded as a failed check instead of ending the script.
+# Keys only, never values. Run in a subshell so a missing Secret fails the check
+# instead of ending the script.
 # --------------------------------------------------------------------------
 
 step "Admin credentials"
@@ -290,9 +282,9 @@ fi
 # --------------------------------------------------------------------------
 # Plugin pinning and load state
 #
-# The pinned list is read from the ConfigMap the chart renders, so it reflects
-# what the controller was actually told to install; the load checks then
-# confirm the controller is really running that set.
+# The pinned list is read from the ConfigMap the chart rendered, so it is what
+# the controller was told to install. The checks after it confirm the controller
+# is really running that set.
 # --------------------------------------------------------------------------
 
 step "Plugins"
@@ -314,10 +306,9 @@ else
     bad "plugin list not found in ConfigMap '${JENKINS_RELEASE_NAME}'"
 fi
 
-# A pinned plugin can sit on the volume and still not be running: Jenkins
-# refuses to load one whose dependencies are unmet, carries on serving, and
-# every other check here stays green while the feature is silently gone. The
-# three checks below close that gap.
+# A plugin can be on the volume and still not be loaded: Jenkins skips one with
+# unmet dependencies and keeps serving, so the feature is gone while everything
+# else looks fine. The three checks below catch that.
 
 installed_plugins="$(kq exec "$POD" -n "$JENKINS_NAMESPACE" -c jenkins -- \
     sh -c 'ls /var/jenkins_home/plugins/*.jpi 2>/dev/null | sed "s|.*/||; s|[.]jpi$||"')"
@@ -337,9 +328,8 @@ else
         bad "pinned but not installed: ${missing[*]}"
     fi
 
-    # Named explicitly because these are not all pinned directly - most arrive
-    # as dependencies - and because a Declarative job that finds the suite
-    # missing finishes green without running a single stage.
+    # Listed by name because most of these arrive as dependencies, and a job
+    # that misses the suite finishes green without running a single stage.
     missing=()
     for plugin in workflow-aggregator pipeline-model-definition \
                   pipeline-model-extensions pipeline-model-api \
@@ -354,16 +344,18 @@ else
     fi
 fi
 
-# Jenkins logs one SEVERE per plugin it could not load, naming the plugin and
-# the dependency that is unsatisfied. Anything matched here means the set on the
-# volume is internally inconsistent, whichever files are present.
-failed_plugins="$(kubectl logs "$POD" -n "$JENKINS_NAMESPACE" -c jenkins 2>/dev/null \
-    | sed -n 's/.*Failed Loading plugin .*(\([A-Za-z0-9_.-]*\)).*/\1/p' | sort -u)"
-
-if [[ -z "$failed_plugins" ]]; then
-    ok "no plugin failed to load on the running controller"
+# Jenkins logs one line per plugin it could not load. Any match means the
+# installed set is inconsistent, whichever files are present.
+if ! controller_logs="$(kubectl logs "$POD" -n "$JENKINS_NAMESPACE" -c jenkins 2>/dev/null)"; then
+    bad "could not read the controller logs - plugin load failures were not verified"
 else
-    bad "plugins failed to load: $(tr '\n' ' ' <<< "$failed_plugins")"
+    failed_plugins="$(sed -n 's/.*Failed Loading plugin .*(\([A-Za-z0-9_.-]*\)).*/\1/p' <<< "$controller_logs" | sort -u)"
+
+    if [[ -z "$failed_plugins" ]]; then
+        ok "no plugin failed to load on the running controller"
+    else
+        bad "plugins failed to load: $(tr '\n' ' ' <<< "$failed_plugins")"
+    fi
 fi
 
 # --------------------------------------------------------------------------
@@ -374,27 +366,23 @@ step "Agent identities"
 
 expect_eq "ServiceAccount jenkins-ci-agent automountServiceAccountToken" "false" \
     "$(kq get serviceaccount jenkins-ci-agent -n "$JENKINS_NAMESPACE" -o jsonpath='{.automountServiceAccountToken}')"
-# Both agent ServiceAccounts default to no API token. CD still reaches the API:
-# its Pod template projects the token explicitly into the kubectl container,
-# which does not depend on this field.
+# Neither agent gets an API token by default. CD still reaches the API: its Pod
+# template mounts the token into the kubectl container explicitly.
 expect_eq "ServiceAccount jenkins-cd-agent automountServiceAccountToken" "false" \
     "$(kq get serviceaccount jenkins-cd-agent -n "$JENKINS_NAMESPACE" -o jsonpath='{.automountServiceAccountToken}')"
 
-# Lists the bindings whose subjects include one agent ServiceAccount. Matching
-# happens on kind, namespace and name inside the template, so a hit cannot come
-# from an unrelated field that merely contains the name, and a subject is not
-# missed because it is not the first in its list.
+# Lists the bindings that grant something to an agent ServiceAccount. The
+# template matches on kind, namespace and name, so an unrelated field that only
+# contains the name cannot match.
 #
-# Single-quoted segments: the $ variables belong to the Go template, not to the
-# shell.
+# Single-quoted so the $ variables stay in the Go template.
 # shellcheck disable=SC2016
 binding_subjects_template() {
     printf '%s' '{{range .items}}{{$name := .metadata.name}}{{$ns := .metadata.namespace}}{{range .subjects}}{{if eq .kind "ServiceAccount"}}{{if eq .namespace "'"$JENKINS_NAMESPACE"'"}}{{if eq .name "'"$1"'"}}{{$ns}}/{{$name}}{{"\n"}}{{end}}{{end}}{{end}}{{end}}{{end}}'
 }
 
-# Asserts that no binding of the given kind grants anything to the given
-# ServiceAccount. Run without kq: a query that could not run at all must fail
-# the check, never look like a clean result.
+# Fails if any binding of this kind grants something to the ServiceAccount.
+# Not kq: a query that could not run must fail the check.
 assert_no_binding() {
     local sa="$1" kind="$2" found
     if ! found="$(kubectl get "$kind" --all-namespaces \
@@ -407,7 +395,7 @@ assert_no_binding() {
     fi
 }
 
-# The CI pipeline must hold no Kubernetes permissions at all, of either kind.
+# The CI agent must have no Kubernetes permissions at all, of either kind.
 for kind in rolebinding clusterrolebinding; do
     assert_no_binding jenkins-ci-agent "$kind"
 done
@@ -415,8 +403,8 @@ done
 # --------------------------------------------------------------------------
 # CD permissions
 #
-# The Role and its RoleBinding are read back from the cluster rather than from
-# the repository, so this reports what is actually in force.
+# The Role and its RoleBinding are read from the cluster, not the repository,
+# so this reports what is actually in force.
 # --------------------------------------------------------------------------
 
 step "CD agent permissions"
@@ -440,11 +428,10 @@ if cd_rules="$(kubectl get role jenkins-cd-agent-release -n "$APP_NAMESPACE" -o 
         fi
     done
 
-    # The write surface itself, rather than a list of verbs that must be absent.
-    # Every rule is reduced to one line and the rules granting anything beyond
-    # get/list/watch are isolated: exactly one is expected, and it must be the
-    # patch on the three named Deployments. Verbs and names are sorted, so the
-    # comparison does not depend on the order they were written in.
+    # Checks the write surface itself, not a list of verbs that must be absent.
+    # Every rule granting more than get/list/watch is collected: exactly one is
+    # expected, the patch on the three named Deployments. Names and verbs are
+    # sorted, so the order they were written in does not matter.
     # shellcheck disable=SC2016
     rule_tpl='{{range .rules}}{{range $i, $g := .apiGroups}}{{if $i}},{{end}}{{if eq $g ""}}core{{else}}{{$g}}{{end}}{{end}};{{range $i, $r := .resources}}{{if $i}},{{end}}{{$r}}{{end}};{{range $i, $n := .resourceNames}}{{if $i}},{{end}}{{$n}}{{end}};{{range $i, $v := .verbs}}{{if $i}},{{end}}{{$v}}{{end}}{{"\n"}}{{end}}'
 
@@ -482,8 +469,8 @@ else
     bad "Role 'jenkins-cd-agent-release' not found in namespace '${APP_NAMESPACE}'"
 fi
 
-# The Role only matters if it is bound to the CD identity and to nothing else,
-# so the binding is read back as well: its roleRef and its complete subject list.
+# The Role matters only if it is bound to the CD identity and nothing else, so
+# the roleRef and the full subject list are read back too.
 if ! cd_binding="$(kubectl get rolebinding jenkins-cd-agent-release -n "$APP_NAMESPACE" \
         -o go-template='{{.roleRef.kind}}/{{.roleRef.name}}{{"\n"}}{{range .subjects}}{{.kind}}/{{.namespace}}/{{.name}}{{"\n"}}{{end}}' 2>/dev/null)"; then
     bad "RoleBinding 'jenkins-cd-agent-release' in '${APP_NAMESPACE}' is missing or could not be read"
@@ -491,8 +478,7 @@ else
     ok "RoleBinding exists: jenkins-cd-agent-release in ${APP_NAMESPACE}"
     expect_eq "CD RoleBinding roleRef" "Role/jenkins-cd-agent-release" \
         "$(head -n 1 <<< "$cd_binding")"
-    # Compared as a whole list, so an extra subject is a failure and not an
-    # unnoticed second holder of these permissions.
+    # Compared as a whole list, so an extra subject fails the check.
     expect_eq "CD RoleBinding subjects" \
         "ServiceAccount/${JENKINS_NAMESPACE}/jenkins-cd-agent" \
         "$(tail -n +2 <<< "$cd_binding" | grep -v '^$' || true)"
@@ -503,9 +489,8 @@ assert_no_binding jenkins-cd-agent clusterrolebinding
 # --------------------------------------------------------------------------
 # Configuration as Code
 #
-# Read from the ConfigMaps the chart rendered, so this reflects the
-# configuration the controller was actually given. The label is derived from
-# the release name pinned in jenkins/chart.env.
+# Read from the ConfigMaps the chart rendered, so this is the configuration the
+# controller was actually given.
 # --------------------------------------------------------------------------
 
 step "JCasC"
@@ -518,7 +503,7 @@ if [[ -z "$casc" ]]; then
 else
     ok "JCasC ConfigMaps present"
 
-    # The controller runs no build work. This is the mechanism, not a hint.
+    # numExecutors: 0 is what keeps build work off the controller.
     if printf '%s' "$casc" | grep -q 'numExecutors: 0'; then
         ok "controller numExecutors: 0"
     else
@@ -533,8 +518,8 @@ else
         fi
     done
 
-    # Agent images must be content-pinned. A tag can be repointed; a digest
-    # cannot, and 'latest' must appear nowhere in the promotion chain.
+    # Agent images must be pinned by digest: a tag can be repointed, a digest
+    # cannot.
     if printf '%s' "$casc" | grep -q ':latest'; then
         bad "an agent image in JCasC uses the 'latest' tag"
     else
@@ -547,6 +532,97 @@ else
     else
         bad "${tagged} agent image reference(s) are not pinned by digest"
     fi
+fi
+
+# --------------------------------------------------------------------------
+# Webhook authentication
+#
+# The webhook endpoint is the only part of Jenkins reachable from the internet,
+# and the shared secret is what authenticates a delivery. Everything below is
+# read back from the running controller.
+#
+# No secret value is read: only the key of the Secret, the id of the credential
+# and the id the plugin points at.
+# --------------------------------------------------------------------------
+
+step "Webhook authentication"
+
+if ( require_webhook_secret "$JENKINS_NAMESPACE" ); then
+    ok "Secret '${WEBHOOK_SECRET_NAME}' present with its required key"
+else
+    bad "Secret '${WEBHOOK_SECRET_NAME}' is missing or incomplete"
+fi
+
+# Not kq: a file that cannot be read must fail its check. For the CD check
+# below, an absence would otherwise look like a pass.
+read_controller_file() {
+    kubectl exec "$POD" -n "$JENKINS_NAMESPACE" -c jenkins -- cat "$1" 2>/dev/null
+}
+
+if [[ -n "$POD" ]]; then
+    if creds="$(read_controller_file /var/jenkins_home/credentials.xml)"; then
+        if grep -qF '<id>github-webhook-secret</id>' <<< "$creds"; then
+            ok "credential exists: github-webhook-secret"
+        else
+            bad "no credential with id 'github-webhook-secret' in the credentials store"
+        fi
+
+        if grep -qF 'StringCredentialsImpl' <<< "$creds"; then
+            ok "credential type: String Credential"
+        else
+            bad "the webhook credential is not a String Credential"
+        fi
+    else
+        bad "could not read the credentials store - the webhook credential was not verified"
+    fi
+
+    if ghconf="$(read_controller_file /var/jenkins_home/github-plugin-configuration.xml)"; then
+        if grep -qF '<credentialsId>github-webhook-secret</credentialsId>' <<< "$ghconf"; then
+            ok "GitHub plugin hook secret: github-webhook-secret"
+        else
+            bad "the GitHub plugin does not reference credential 'github-webhook-secret'"
+        fi
+
+        if grep -qF '<signatureAlgorithm>SHA256</signatureAlgorithm>' <<< "$ghconf"; then
+            ok "webhook signature algorithm: SHA256"
+        else
+            bad "the GitHub plugin is not set to validate SHA256 signatures"
+        fi
+
+        # An empty server list is what keeps this installation free of a GitHub
+        # API token.
+        if grep -qF '<configs/>' <<< "$ghconf"; then
+            ok "no GitHub server configuration, so no API token is required"
+        else
+            bad "the GitHub plugin carries a server configuration this repository does not define"
+        fi
+    else
+        bad "could not read the GitHub plugin configuration - the hook secret was not verified"
+    fi
+
+    # A push must start CI and only CI. Deployment is a separate job, started
+    # on purpose from an image CI has already published.
+    if ci_job="$(read_controller_file /var/jenkins_home/jobs/ci-application/config.xml)"; then
+        if grep -qF 'GitHubPushTrigger' <<< "$ci_job"; then
+            ok "ci-application has a GitHub push trigger"
+        else
+            bad "ci-application has no GitHub push trigger - a push would build nothing"
+        fi
+    else
+        bad "could not read the ci-application job configuration"
+    fi
+
+    if cd_job="$(read_controller_file /var/jenkins_home/jobs/application-cd/config.xml)"; then
+        if grep -qF 'GitHubPushTrigger' <<< "$cd_job"; then
+            bad "application-cd has a GitHub push trigger - a push would deploy directly"
+        else
+            ok "application-cd has no GitHub push trigger"
+        fi
+    else
+        bad "could not read the application-cd job configuration - its trigger was not verified"
+    fi
+else
+    bad "no controller Pod - webhook authentication was not verified"
 fi
 
 # --------------------------------------------------------------------------

@@ -2,13 +2,10 @@
 #
 # configure-jenkins.sh - reconcile a running Jenkins with this repository.
 #
-# The division of labour against install-jenkins.sh:
-#   install    creates the initial Jenkins installation and its prerequisites.
-#   configure  reconciles an existing release, the controller and agent RBAC,
-#              and JCasC with this repository.
+# install-jenkins.sh creates the installation. This script only updates an
+# existing one: the controller and agent RBAC, the JCasC files and the release.
 #
-# Reconciliation refuses to create a missing Helm release: a first installation
-# is install-jenkins.sh's job, never a silent side effect of this script.
+# It refuses to create a missing Helm release - that is install-jenkins.sh's job.
 #
 # Dependencies: kubectl, helm, sha256sum.
 
@@ -26,13 +23,12 @@ usage() {
 Usage: $(basename "${BASH_SOURCE[0]}") [--dry-run] [-h|--help]
 
 Reapplies this repository's Jenkins configuration to an existing release: the
-controller and agent identities and permissions, the JCasC files, and a helm
-upgrade from the pinned chart with jenkins/values.yaml.
+controller and agent RBAC, the JCasC files, and a helm upgrade from the pinned
+chart with jenkins/values.yaml.
 
 Options:
   --dry-run   Run every check and render the upgrade without changing the
-              cluster. Manifests are validated client-side and Helm runs with
-              --dry-run, so nothing is applied.
+              cluster. Nothing is applied.
   -h, --help  Show this help.
 
 Environment:
@@ -42,11 +38,10 @@ Environment:
 
 Exit codes: 0 ok, 1 error, 2 usage.
 
-Note on plugins: values.yaml sets overwritePlugins: false, so the persistent
-plugin directory is never cleared. It is not frozen either. When an upgrade
-restarts the controller, a pinned version newer than the one on the volume
-replaces it, while equal and older versions are left alone. Moving a pin
-backwards therefore does not take effect here and needs its own procedure.
+Note on plugins: values.yaml sets overwritePlugins: false, so the plugin
+directory on the volume is never cleared. A newer pinned version still replaces
+the installed one when the controller restarts, but moving a pin backwards is
+not applied here and needs its own procedure.
 EOF
 }
 
@@ -92,13 +87,15 @@ helm list -n "$JENKINS_NAMESPACE" --filter "^${JENKINS_RELEASE_NAME}\$"
 # --------------------------------------------------------------------------
 # Preconditions that an upgrade can silently break
 #
-# The externally owned admin Secret is checked before the upgrade, so the
-# controller is not restarted with missing or broken credentials.
+# The external Secrets are checked before the upgrade, so the controller is not
+# restarted without working credentials. If values.yaml mounts a Secret the
+# namespace does not have, the new Pod cannot start and the old one is gone.
 # --------------------------------------------------------------------------
 
-step "Admin credentials"
+step "External Secrets"
 
 require_admin_secret "$JENKINS_NAMESPACE"
+require_webhook_secret "$JENKINS_NAMESPACE"
 
 # --------------------------------------------------------------------------
 # Controller RBAC
@@ -115,8 +112,8 @@ fi
 # --------------------------------------------------------------------------
 # Agent identities and permissions
 #
-# Reconciled on every run, so a change to an agent ServiceAccount or to the CD
-# Role reaches the cluster through this script and not by hand.
+# Reapplied on every run, so changes to an agent ServiceAccount or to the CD
+# Role reach the cluster through this script and not by hand.
 # --------------------------------------------------------------------------
 
 step "Agent RBAC"
@@ -134,8 +131,7 @@ done
 # --------------------------------------------------------------------------
 # Chart artifact
 #
-# The pinned chart artifact is downloaded and SHA256-verified on every
-# reconciliation, before Helm is given it.
+# Downloaded and SHA256-verified on every run, before Helm is given it.
 # --------------------------------------------------------------------------
 
 step "Pinned chart"
