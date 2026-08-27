@@ -29,3 +29,20 @@ def test_login_page_is_reachable_without_a_session(client):
     response = client.get("/login")
 
     assert response.status_code == 200
+
+
+def test_session_cookie_is_sent_with_its_protective_attributes(client):
+    """The attributes are read from the app config for every session cookie.
+
+    Logging out is the one route that changes the session without calling the
+    Backend, so it is what this asserts on.
+    """
+    with client.session_transaction() as browser_session:
+        browser_session["user_id"] = 1
+
+    response = client.post("/logout")
+    set_cookie = response.headers["Set-Cookie"]
+
+    assert "Secure" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=Lax" in set_cookie
