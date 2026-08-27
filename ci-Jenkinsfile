@@ -58,6 +58,10 @@ pipeline {
         // and the Groovy steps.
         SERVICES = 'backend frontend worker'
 
+        // The only branch a successful build promotes from. Compared against the
+        // branch the Checkout stage reports, which is remote-qualified.
+        PROMOTION_BRANCH = 'origin/jenkins-cicd'
+
         // Build outputs. Both live in the workspace emptyDir, which the kubelet
         // destroys with the Pod.
         ARTIFACT_DIR = '.artifacts'
@@ -603,6 +607,37 @@ pipeline {
         success {
             echo "CI succeeded. Images published under tag ${env.IMAGE_TAG}; " +
                 'verified digests recorded in image-manifest.json.'
+
+            // Hands the finished tag to the deployment job. This runs only here,
+            // so a build that failed any gate never reaches it, and it starts a
+            // separate job rather than deploying anything itself: this pipeline
+            // still holds no Kubernetes credential.
+            //
+            // Only the integration branch promotes. A successful run on any other
+            // branch stops at the message above.
+            script {
+                if (env.GIT_BRANCH_NAME == env.PROMOTION_BRANCH) {
+                    echo "Starting application-cd for ${env.IMAGE_TAG}."
+
+                    // wait: false - CI does not stay up for the rollout. The
+                    // deployment job reports its own result.
+                    build(
+                        job: 'application-cd',
+                        wait: false,
+                        parameters: [
+                            string(name: 'IMAGE_TAG',       value: env.IMAGE_TAG),
+                            string(name: 'CI_BUILD_NUMBER', value: env.BUILD_NUMBER),
+                            string(name: 'ENVIRONMENT',     value: 'dev'),
+                            text(  name: 'RELEASE_NOTE',
+                                   value: "Promoted from ${env.JOB_NAME} #${env.BUILD_NUMBER} " +
+                                          "(${env.GIT_COMMIT_SHORT})."),
+                        ],
+                    )
+                } else {
+                    echo "No promotion: ${env.GIT_BRANCH_NAME} is not " +
+                        "${env.PROMOTION_BRANCH}."
+                }
+            }
         }
 
         failure {
