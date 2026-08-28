@@ -222,7 +222,7 @@ jenkins:
                       - {name: trivy-tmp,   mountPath: /tmp}
 
                   - name: skopeo
-                    image: quay.io/skopeo/stable@sha256:17da3ac5cadf2b27a3dcf7dea857c4cea558ef757641725fc0eec560030057b3
+                    image: quay.io/skopeo/stable@sha256:0f75798d450d0cc0ea3700c79d929ae7609fb7d0e627673c14be8a484587c9b1
                     command: ["cat"]
                     tty: true
                     env:
