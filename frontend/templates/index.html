@@ -125,6 +125,53 @@
         .s13 { top: 78%; left: 68%;  animation-duration: 11s, 4.0s; }
         .s14 { top: 72%; left: 88%;  animation-duration: 12s, 4.4s; }
 
+        /* Subtle gold background sparkles. They fade in place, without drift. */
+        .sparkles span.gold,
+        .sparkles span.gold::before,
+        .sparkles span.gold::after {
+            background: rgba(250, 214, 145, 0.9);
+        }
+
+        .sparkles span.gold {
+            width: 4px;
+            height: 4px;
+            box-shadow:
+                0 0 5px rgba(247, 210, 140, 0.5),
+                0 0 11px rgba(238, 186, 108, 0.28);
+            animation: goldFade ease-in-out infinite;
+            opacity: 0;
+        }
+
+        .sparkles span.gold::before {
+            height: 9px;
+        }
+
+        .sparkles span.gold::after {
+            width: 9px;
+        }
+
+        @keyframes goldFade {
+            0%, 100% {
+                opacity: 0;
+                transform: scale(0.7);
+            }
+
+            50% {
+                opacity: 0.5;
+                transform: scale(1);
+            }
+        }
+
+        /* Staggered so the points never pulse together. */
+        .sparkles span.g1 { top: 12%; left: 4%;  animation-duration: 11s; animation-delay: -1s; }
+        .sparkles span.g2 { top: 22%; left: 95%; animation-duration: 14s; animation-delay: -6s; }
+        .sparkles span.g3 { top: 32%; left: 88%; animation-duration: 13s; animation-delay: -9s; }
+        .sparkles span.g4 { top: 40%; left: 9%;  animation-duration: 12s; animation-delay: -3s; }
+        .sparkles span.g5 { top: 52%; left: 92%; animation-duration: 15s; animation-delay: -8s; }
+        .sparkles span.g6 { top: 64%; left: 5%;  animation-duration: 13s; animation-delay: -5s; }
+        .sparkles span.g7 { top: 76%; left: 96%; animation-duration: 16s; animation-delay: -12s; }
+        .sparkles span.g8 { top: 88%; left: 12%; animation-duration: 12s; animation-delay: -2s; }
+
         .page {
             width: min(1320px, calc(100% - 44px));
             margin: 0 auto;
@@ -188,6 +235,90 @@
             text-shadow:
                 0 0 12px rgba(200, 150, 255, 0.65),
                 0 0 34px rgba(150, 80, 255, 0.45);
+        }
+
+        /* Keep PLUS and the sparkle together on the title line. */
+        .brand-mark {
+            white-space: nowrap;
+            /* Tighten the gap after "TaskFlow". */
+            margin-left: -0.1em;
+            /* Keep "TaskFlow" near the centre of the hero. */
+            margin-right: -0.95em;
+        }
+
+        /* Shared serif style for PLUS and the tagline. */
+        .brand-plus,
+        .brand-tagline {
+            font-family: "Palatino Linotype", "Book Antiqua", Palatino, Georgia,
+                "Times New Roman", serif;
+            font-style: italic;
+            font-weight: 400;
+            letter-spacing: normal;
+        }
+
+        .brand-plus {
+            font-size: 0.3em;
+            color: #f0d5a0;
+            /* Soft gold glow in place of the purple one inherited from h1. */
+            text-shadow: 0 0 10px rgba(240, 205, 130, 0.3);
+        }
+
+        .brand-tagline {
+            /* Sized against the viewport: the tagline sits outside the h1. */
+            font-size: clamp(17px, 2vw, 20px);
+            margin: 5px 0 0;
+            color: #e8cfa0;
+            text-shadow: 0 0 8px rgba(240, 205, 130, 0.18);
+        }
+
+        /* Gold shimmer for the PLUS wordmark; solid gold is the fallback. */
+        @supports (-webkit-background-clip: text) or (background-clip: text) {
+            .brand-plus {
+                background: linear-gradient(
+                    100deg,
+                    #e3c489 0%,
+                    #fbeecb 35%,
+                    #edd39a 60%,
+                    #e3c489 100%
+                );
+                background-size: 200% 100%;
+                -webkit-background-clip: text;
+                background-clip: text;
+                color: transparent;
+                animation: goldShimmer 9s ease-in-out infinite;
+            }
+        }
+
+        @keyframes goldShimmer {
+            0%, 100% {
+                background-position: 0% 50%;
+            }
+
+            50% {
+                background-position: 100% 50%;
+            }
+        }
+
+        .brand-sparkle {
+            margin-left: 0.26em;
+            font-size: 0.21em;
+            font-style: normal;
+            vertical-align: 0.3em;
+            /* twinkle is shared with the background sparkles. */
+            animation: twinkle 3.6s ease-in-out infinite;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .brand-plus,
+            .brand-sparkle {
+                animation: none;
+            }
+
+            /* Hold the points visible once the fade is off. */
+            .sparkles span.gold {
+                animation: none;
+                opacity: 0.35;
+            }
         }
 
         .author {
@@ -587,6 +718,15 @@
         <span class="s12"></span>
         <span class="s13"></span>
         <span class="s14"></span>
+
+        <span class="gold g1"></span>
+        <span class="gold g2"></span>
+        <span class="gold g3"></span>
+        <span class="gold g4"></span>
+        <span class="gold g5"></span>
+        <span class="gold g6"></span>
+        <span class="gold g7"></span>
+        <span class="gold g8"></span>
     </div>
 
     <main class="page">
@@ -594,7 +734,13 @@
             <div class="hero-content">
                 <span class="top-label">Personal productivity app</span>
 
-                <h1>TaskFlow</h1>
+                <h1>
+                    TaskFlow
+                    <span class="brand-mark"><span class="brand-plus">PLUS</span><span class="brand-sparkle" aria-hidden="true">✨</span></span>
+                </h1>
+
+                <p class="brand-tagline">Make every task a PLUS.</p>
+
                 <div class="author">by Viktoria Zelensky</div>
 
                 <div class="user-bar">
