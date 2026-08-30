@@ -157,9 +157,6 @@ pipeline {
         }
 
         stage('Tests') {
-            environment {
-                TASKFLOW_FORCE_TEST_FAILURE = '1'
-            }
             steps {
                 container('python') {
                     // -e is turned off deliberately: every service must run and
