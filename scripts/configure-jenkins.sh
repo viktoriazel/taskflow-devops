@@ -3,7 +3,7 @@
 # configure-jenkins.sh - reconcile a running Jenkins with this repository.
 #
 # install-jenkins.sh creates the installation. This script only updates an
-# existing one: the controller and agent RBAC, the JCasC files and the release.
+# existing one: RBAC, the webhook Ingress, JCasC and the Helm release.
 #
 # It refuses to create a missing Helm release - that is install-jenkins.sh's job.
 #
@@ -23,8 +23,8 @@ usage() {
 Usage: $(basename "${BASH_SOURCE[0]}") [--dry-run] [-h|--help]
 
 Reapplies this repository's Jenkins configuration to an existing release: the
-controller and agent RBAC, the JCasC files, and a helm upgrade from the pinned
-chart with jenkins/values.yaml.
+controller and agent RBAC, the webhook Ingress, the JCasC files, and a helm
+upgrade from the pinned chart with jenkins/values.yaml.
 
 Options:
   --dry-run   Run every check and render the upgrade without changing the
@@ -62,7 +62,8 @@ step "Preflight"
 
 require_commands kubectl helm sha256sum
 load_chart_env
-require_repo_files "$VALUES_FILE" "$RBAC_MANIFEST" "${AGENT_RBAC_MANIFESTS[@]}"
+require_repo_files "$VALUES_FILE" "$RBAC_MANIFEST" "${AGENT_RBAC_MANIFESTS[@]}" \
+    "$WEBHOOK_INGRESS_MANIFEST"
 jcasc_set_file_args
 
 info "repo root: ${REPO_ROOT}"
@@ -127,6 +128,27 @@ for manifest in "${AGENT_RBAC_MANIFESTS[@]}"; do
         kubectl apply -f "$manifest"
     fi
 done
+
+# --------------------------------------------------------------------------
+# Webhook Ingress
+#
+# Reapplied on every run for the same reason as the RBAC above: a change to the
+# manifest - notably the pinned GitHub source ranges that check-webhook-cidrs.sh
+# reports on - reaches the cluster through this script and not by hand.
+#
+# The Service it routes to already exists, because this script refuses to run
+# without the release. Reapplying an unchanged Ingress is a no-op and does not
+# reprovision the load balancer, so the webhook endpoint and its DNS record are
+# untouched by a routine reconcile.
+# --------------------------------------------------------------------------
+
+step "Webhook Ingress"
+
+if [[ "$DRY_RUN" == true ]]; then
+    kubectl apply --dry-run=client -f "$WEBHOOK_INGRESS_MANIFEST"
+else
+    kubectl apply -f "$WEBHOOK_INGRESS_MANIFEST"
+fi
 
 # --------------------------------------------------------------------------
 # Chart artifact

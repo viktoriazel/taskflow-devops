@@ -46,6 +46,13 @@ AGENT_RBAC_MANIFESTS=(
     "${JENKINS_DIR}/rbac/cd-agent-rbac.yaml"
 )
 
+# The webhook's public entry point. Not a Helm resource, so the release never
+# creates or removes it; install applies it once the Service it routes to
+# exists, and configure reapplies it, which is how a change to the pinned
+# GitHub source ranges reaches the cluster through a script rather than by hand.
+# shellcheck disable=SC2034
+WEBHOOK_INGRESS_MANIFEST="${JENKINS_DIR}/webhook-ingress.yaml"
+
 # The namespace the CD Role is created in. Not overridable, because
 # jenkins/rbac/cd-agent-rbac.yaml names this namespace directly.
 APP_NAMESPACE="devops-app"

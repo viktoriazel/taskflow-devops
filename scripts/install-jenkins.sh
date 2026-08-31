@@ -19,13 +19,20 @@ source "${SCRIPT_DIR}/jenkins-common.sh"
 DRY_RUN=false
 HELM_TIMEOUT="${HELM_TIMEOUT:-10m}"
 
+# Cluster-scoped, so it is not part of the namespaced manifests jenkins-common.sh
+# carries, and only this script creates it: verify reads the class name back off
+# the PVC, and uninstall leaves cluster-scoped storage alone.
+STORAGECLASS_MANIFEST="${JENKINS_DIR}/storageclass-gp3.yaml"
+
 usage() {
     cat <<EOF
 Usage: $(basename "${BASH_SOURCE[0]}") [--dry-run] [-h|--help]
 
 Installs Jenkins from the configuration in jenkins/: the namespace, the
-controller and agent ServiceAccounts with their RBAC, and the Helm release
-built from the chart version pinned in jenkins/chart.env.
+StorageClass the controller's PersistentVolumeClaim binds through, the
+controller and agent ServiceAccounts with their RBAC, the Helm release built
+from the chart version pinned in jenkins/chart.env, and the webhook Ingress
+that publishes the GitHub hook path.
 
 Options:
   --dry-run   Run every check and render the release without changing the
@@ -70,7 +77,8 @@ step "Preflight"
 
 require_commands kubectl helm sha256sum
 load_chart_env
-require_repo_files "$VALUES_FILE" "$NAMESPACE_MANIFEST" "$RBAC_MANIFEST" "${AGENT_RBAC_MANIFESTS[@]}"
+require_repo_files "$VALUES_FILE" "$NAMESPACE_MANIFEST" "$STORAGECLASS_MANIFEST" \
+    "$RBAC_MANIFEST" "${AGENT_RBAC_MANIFESTS[@]}" "$WEBHOOK_INGRESS_MANIFEST"
 jcasc_set_file_args
 
 info "repo root: ${REPO_ROOT}"
@@ -94,6 +102,25 @@ else
     kubectl get namespace "$JENKINS_NAMESPACE" -o name >/dev/null \
         || fail "namespace '${JENKINS_NAMESPACE}' does not exist after applying ${NAMESPACE_MANIFEST}."
     info "namespace ready: ${JENKINS_NAMESPACE}"
+fi
+
+# --------------------------------------------------------------------------
+# StorageClass
+#
+# Applied before the release, because the chart's PersistentVolumeClaim
+# references it by name (persistence.storageClass in jenkins/values.yaml). If it
+# is missing, the PVC stays Pending and the install fails on the Helm timeout
+# rather than on the thing that is actually absent.
+#
+# Cluster-scoped and idempotent: re-running this reapplies the same definition.
+# --------------------------------------------------------------------------
+
+step "StorageClass"
+
+if [[ "$DRY_RUN" == true ]]; then
+    kubectl apply --dry-run=client -f "$STORAGECLASS_MANIFEST"
+else
+    kubectl apply -f "$STORAGECLASS_MANIFEST"
 fi
 
 # --------------------------------------------------------------------------
@@ -176,11 +203,34 @@ helm_args=(
 if [[ "$DRY_RUN" == true ]]; then
     helm "${helm_args[@]}" --dry-run >/dev/null
     info "release renders cleanly; nothing was applied"
+
+    # The real run applies this after the release, which a dry run never
+    # reaches. Validated here instead, so --dry-run still covers every manifest
+    # the script would apply.
+    step "Webhook Ingress"
+    kubectl apply --dry-run=client -f "$WEBHOOK_INGRESS_MANIFEST"
+
     step "Dry run complete"
     exit 0
 fi
 
 helm "${helm_args[@]}"
+
+# --------------------------------------------------------------------------
+# Webhook Ingress
+#
+# Applied after the release, because it routes to the jenkins Service the chart
+# creates. Not a Helm resource: helm uninstall leaves it alone, which is why
+# uninstall-jenkins.sh --purge-data keeps the load balancer and its DNS record
+# intact while --purge-all removes it along with the namespace.
+#
+# Idempotent: reapplying an unchanged Ingress is a no-op and does not
+# reprovision the load balancer.
+# --------------------------------------------------------------------------
+
+step "Webhook Ingress"
+
+kubectl apply -f "$WEBHOOK_INGRESS_MANIFEST"
 
 # --------------------------------------------------------------------------
 # Result
