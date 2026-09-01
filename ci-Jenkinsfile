@@ -60,7 +60,7 @@ pipeline {
 
         // The only branch a successful build promotes from. Compared against the
         // branch the Checkout stage reports, which is remote-qualified.
-        PROMOTION_BRANCH = 'origin/jenkins-cicd'
+        PROMOTION_BRANCH = 'origin/main'
 
         // Build outputs. Both live in the workspace emptyDir, which the kubelet
         // destroys with the Pod.

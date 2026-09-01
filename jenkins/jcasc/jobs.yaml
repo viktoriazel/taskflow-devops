@@ -15,7 +15,7 @@ jobs:
   - script: |
       // Both jobs use the same repository and the same branch, set once here.
       String repositoryUrl = 'https://github.com/viktoriazel/taskflow-devops.git'
-      String scmBranch     = 'jenkins-cicd'
+      String scmBranch     = 'main'
 
       pipelineJob('ci-application') {
           description(
