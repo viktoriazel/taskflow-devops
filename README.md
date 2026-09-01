@@ -589,7 +589,7 @@ None of these are secrets, but all of them are specific to this deployment:
 | AWS region | `eu-north-1` | Jenkinsfiles, `terraform.tfvars`, script defaults |
 | EKS cluster name | `taskflow-dev-eks` | `EXPECTED_CLUSTER_NAME` in the scripts, `TARGET_CLUSTER` in `cd-Jenkinsfile` |
 | Domain names | `taskflow.plus`, `jenkins.taskflow.plus` | `terraform.tfvars`, `k8s/base/60-ingress.yaml`, `jenkins/webhook-ingress.yaml` |
-| Repository URL and branch | this repository, branch `jenkins-cicd` | `jenkins/jcasc/jobs.yaml`, `PROMOTION_BRANCH` in `ci-Jenkinsfile` |
+| Repository URL and branch | this repository, branch `main` | `jenkins/jcasc/jobs.yaml`, `PROMOTION_BRANCH` in `ci-Jenkinsfile` |
 | Environment endpoints | RDS host, S3 bucket, SNS topic | `k8s/base/20-configmap.yaml`, from your own Terraform outputs |
 
 ---
@@ -732,7 +732,7 @@ This is the one external integration that has to be created by hand, in the repo
 
 No GitHub token is needed anywhere. Jenkins does not manage webhooks through the GitHub API, and both jobs check the repository out anonymously over HTTPS. Jenkins verifies every delivery with HMAC SHA-256 against the shared secret.
 
-The jobs check out the branch configured in `jenkins/jcasc/jobs.yaml`, currently `jenkins-cicd`, and CI promotes to CD only from that branch.
+The jobs check out the branch configured in `jenkins/jcasc/jobs.yaml`, currently `main`, and CI promotes to CD only from that branch.
 
 ---
 
