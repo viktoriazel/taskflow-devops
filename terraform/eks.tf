@@ -300,6 +300,10 @@ module "eks" {
       addon_version  = "v1.23.0-eksbuild.1"
       before_compute = true
 
+      configuration_values = jsonencode({
+        enableNetworkPolicy = "true"
+      })
+
       pod_identity_association = [{
         role_arn        = aws_iam_role.vpc_cni_pod_identity.arn
         service_account = "aws-node"
