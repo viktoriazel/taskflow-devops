@@ -1,0 +1,234 @@
+flowchart TB
+
+%% TaskFlow - Deployment View
+%% Reading the diagram:
+%%   the two sides of the platform are drawn next to each other: the
+%%     application side and the Jenkins side, each reading top to bottom
+%%   solid line  = runtime traffic or control action
+%%   dotted line = configuration or provisioning relationship
+%%   an Ingress is not a traffic hop: each ALB is created from the Ingress
+%%     rule declared inside the namespace, so that relation is dotted
+%%   each ALB uses target-type ip, so runtime traffic reaches Pod endpoints
+%%     directly; a Service object is not a traffic hop either
+%%   a namespace is a logical boundary inside the cluster, not a place: it is
+%%     drawn beside its node group, never inside it, and only Pods are
+%%     scheduled onto nodes - Services, Ingresses, ConfigMaps, Secrets and
+%%     PVCs are namespace-scoped objects and live on no node
+%%   dotted "scheduled onto" line = placement of a namespace's workload Pods
+%%     onto the EC2 nodes of a node group; it is not traffic
+%%   Route 53 and ACM are outside the customer VPC; both ALBs live inside
+%%     it, in the public subnets
+%%   subnet tiers are stated on the blocks that live in them
+%%   build and scan tooling is detailed in the Pipeline Flow diagram
+
+%% ---------------------------------------------------------
+%% EXTERNAL ACTORS
+%% ---------------------------------------------------------
+
+USER["User<br/>browser"]
+GITHUB["GitHub<br/>repository · webhook"]
+OPERATOR["Operator<br/>kubectl"]
+
+subgraph AWS["AWS · eu-north-1"]
+
+    %% -----------------------------------------------------
+    %% PUBLIC ENTRY - DNS AND TLS, OUTSIDE THE CUSTOMER VPC
+    %% -----------------------------------------------------
+
+    APPDNS["taskflow.plus<br/>Route 53 · ACM"]
+
+    WHDNS["jenkins.taskflow.plus<br/>Route 53 · ACM"]
+
+    PF["Operator access<br/>kubectl port-forward<br/>Jenkins UI not public"]
+
+    %% -----------------------------------------------------
+    %% CUSTOMER VPC
+    %% -----------------------------------------------------
+
+    subgraph VPC["Customer VPC · 2 AZs"]
+
+        subgraph PUBSUB["Public subnets"]
+
+            APPALB["Application HTTPS ALB<br/>open to the internet"]
+
+            WHALB["Webhook HTTPS ALB<br/>/github-webhook/<br/>GitHub CIDRs only"]
+
+        end
+
+        subgraph APPSIDE["Application side"]
+        direction TB
+
+            subgraph APPNS["namespace: devops-app · logical boundary in the cluster"]
+            direction TB
+
+                subgraph APPPODS["workload Pods · Deployments"]
+
+                    FRONTEND["Frontend · 2 replicas<br/>SA taskflow-frontend<br/>no AWS role"]
+
+                    BACKEND["Backend · 2 replicas<br/>SA taskflow-backend<br/>Pod Identity → S3"]
+
+                    WORKER["Worker · 2 replicas<br/>SA taskflow-worker<br/>Pod Identity → SNS"]
+
+                end
+
+                APPRES["Namespace-scoped objects<br/>Ingress · ClusterIP Services<br/>ConfigMap · Secrets<br/>on no node"]
+
+            end
+
+            NGAPP["Application Node Group<br/>3 × t3.small<br/>private application subnets"]
+
+            subgraph APPDB["Private database subnets"]
+
+                RDS[("Amazon RDS PostgreSQL<br/>private · no internet")]
+
+            end
+
+        end
+
+        subgraph JENSIDE["Jenkins side"]
+        direction TB
+
+            subgraph JENKINSNS["namespace: jenkins · logical boundary in the cluster"]
+            direction TB
+
+                subgraph JENPODS["Controller and Agent Pods"]
+
+                    CTRL["Jenkins Controller<br/>permanent Pod<br/>numExecutors = 0<br/>no application deploy<br/>permissions"]
+
+                    CIAG["CI Agent · ephemeral<br/>SA jenkins-ci-agent<br/>Pod Identity → ECR push<br/>no Kubernetes deploy access"]
+
+                    CDAG["CD Agent · ephemeral<br/>SA jenkins-cd-agent<br/>limited deploy RBAC<br/>ECR metadata read-only"]
+
+                end
+
+                JSVC["Jenkins Service · ClusterIP<br/>namespace-scoped object<br/>on no node"]
+
+                JRES["Jenkins configuration<br/>JCasC · plugins<br/>Job DSL · Jobs as Code<br/>Kubernetes Secrets<br/>webhook Ingress<br/>on no node"]
+
+                JPVC["PVC · taskflow-gp3<br/>Jenkins home<br/>namespace-scoped object"]
+
+            end
+
+            NGJEN["Jenkins Node Group<br/>1 × m7i-flex.large<br/>private application subnets<br/>taint workload=jenkins:NoSchedule"]
+
+        end
+
+    end
+
+    %% -----------------------------------------------------
+    %% CONTROL PLANE
+    %% -----------------------------------------------------
+
+    KAPI["EKS Control Plane<br/>taskflow-dev-eks<br/>AWS-managed<br/>outside customer VPC"]
+
+    %% -----------------------------------------------------
+    %% AWS-MANAGED SERVICES OUTSIDE THE VPC
+    %% -----------------------------------------------------
+
+    subgraph OUTSIDE["AWS managed services"]
+
+        ECR["Amazon ECR<br/>3 repositories<br/>immutable tags"]
+
+        EBS["Amazon EBS<br/>gp3 · Jenkins home"]
+
+        S3["Amazon S3<br/>private uploads"]
+
+        SNS["Amazon SNS<br/>notifications"]
+
+    end
+
+end
+
+%% ---------------------------------------------------------
+%% PUBLIC ENTRY - RUNTIME TRAFFIC
+%% ---------------------------------------------------------
+
+USER -->|"HTTPS"| APPDNS
+APPDNS --> APPALB
+APPALB -->|"to Pod IP"| FRONTEND
+
+GITHUB -->|"HTTPS webhook"| WHDNS
+WHDNS --> WHALB
+WHALB -->|"HTTP :8080 · to Pod IP"| CTRL
+
+OPERATOR --> PF
+PF -->|"to Controller Pod"| CTRL
+
+%% ---------------------------------------------------------
+%% SCHEDULING - ONLY PODS LAND ON NODES
+%% ---------------------------------------------------------
+
+APPPODS -. "Pods scheduled onto" .-> NGAPP
+JENPODS -. "Pods scheduled onto<br/>tolerate workload=jenkins" .-> NGJEN
+
+%% ---------------------------------------------------------
+%% CONFIGURATION - AN INGRESS IS NOT A TRAFFIC HOP
+%% ---------------------------------------------------------
+
+APPALB -. "declared by Ingress" .-> APPRES
+WHALB -. "declared by Ingress" .-> JRES
+
+JRES -. "configures" .-> CTRL
+JSVC -. "selects Controller Pod" .-> CTRL
+
+%% ---------------------------------------------------------
+%% JENKINS CONTROL / AGENTS
+%% ---------------------------------------------------------
+
+CTRL -->|"schedules work"| CIAG
+CTRL -->|"schedules work"| CDAG
+
+CTRL -->|"creates Agent Pods"| KAPI
+CDAG -->|"deploy · rollout"| KAPI
+
+CIAG -->|"push images"| ECR
+CDAG -->|"verify metadata"| ECR
+
+JPVC -.-> EBS
+
+%% ---------------------------------------------------------
+%% APPLICATION RUNTIME
+%% ---------------------------------------------------------
+
+FRONTEND -->|"HTTP"| BACKEND
+FRONTEND -->|"presigned URL"| S3
+
+BACKEND -->|"/notify"| WORKER
+BACKEND -->|"PostgreSQL"| RDS
+BACKEND -->|"PutObject"| S3
+
+WORKER -->|"Publish"| SNS
+
+%% ---------------------------------------------------------
+%% STYLES
+%% Same purple palette as the Pipeline Flow diagram:
+%%   actor  = outside the platform entirely
+%%   entry  = public entry point into the platform
+%%   work   = running workload Pods
+%%   note   = declared Kubernetes objects and access paths, not workloads
+%%   ctx    = AWS-managed Kubernetes control plane
+%%   ext    = AWS managed services outside the cluster
+%%   nodegrp = EC2 capacity a namespace's Pods are scheduled onto
+%% ---------------------------------------------------------
+
+classDef actor  fill:#F3F4F6,stroke:#4B5563,stroke-width:2px,color:#111827
+classDef entry  fill:#DDD6FE,stroke:#7C3AED,stroke-width:2px,color:#1F2937
+classDef work   fill:#EDE9FE,stroke:#6D28D9,stroke-width:2px,color:#1F2937
+classDef note   fill:#FFFFFF,stroke:#7C3AED,stroke-width:1px,color:#4C1D95
+classDef ctx    fill:#F5F3FF,stroke:#7C3AED,stroke-width:2px,color:#1F2937
+classDef ext    fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,color:#1F2937
+classDef cloud  fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+classDef vpcbox fill:#F5F3FF,stroke:#6D28D9,stroke-width:3px,color:#4C1D95
+classDef zone   fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+classDef nodegrp fill:#F5F3FF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+
+class USER,GITHUB,OPERATOR actor
+class APPDNS,WHDNS,APPALB,WHALB entry
+class FRONTEND,BACKEND,WORKER,CTRL,CIAG,CDAG work
+class PF,APPRES,JSVC,JRES,JPVC note
+class NGAPP,NGJEN nodegrp
+class KAPI ctx
+class RDS,ECR,EBS,S3,SNS ext
+class AWS cloud
+class VPC vpcbox
+class PUBSUB,APPSIDE,APPNS,APPPODS,APPDB,JENSIDE,JENKINSNS,JENPODS,OUTSIDE zone

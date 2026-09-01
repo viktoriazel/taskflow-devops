@@ -1,991 +1,936 @@
 <h1 align="center">TaskFlow</h1>
 
 <p align="center">
-  <b>A multi-service todo application running on Amazon EKS</b>
+  <b>A multi-service todo application on Amazon EKS, delivered by a Jenkins CI/CD platform running inside the same cluster</b>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Kubernetes-6D28D9?style=for-the-badge&logo=kubernetes&logoColor=white" />
-  <img src="https://img.shields.io/badge/Amazon_EKS-7C3AED?style=for-the-badge&logo=amazoneks&logoColor=white" />
+  <img src="https://img.shields.io/badge/Amazon_EKS-6D28D9?style=for-the-badge&logo=amazoneks&logoColor=white" />
+  <img src="https://img.shields.io/badge/Kubernetes-7C3AED?style=for-the-badge&logo=kubernetes&logoColor=white" />
   <img src="https://img.shields.io/badge/Terraform-6D28D9?style=for-the-badge&logo=terraform&logoColor=white" />
-  <img src="https://img.shields.io/badge/Docker-7C3AED?style=for-the-badge&logo=docker&logoColor=white" />
-  <img src="https://img.shields.io/badge/Amazon_RDS-6D28D9?style=for-the-badge&logo=amazonrds&logoColor=white" />
-  <img src="https://img.shields.io/badge/Amazon_S3-7C3AED?style=for-the-badge&logo=amazons3&logoColor=white" />
-  <img src="https://img.shields.io/badge/Amazon_SNS-6D28D9?style=for-the-badge&logo=amazonaws&logoColor=white" />
-  <img src="https://img.shields.io/badge/Python-7C3AED?style=for-the-badge&logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Amazon_ECR-7C3AED?style=for-the-badge&logo=amazonaws&logoColor=white" />
+  <img src="https://img.shields.io/badge/Python-6D28D9?style=for-the-badge&logo=python&logoColor=white" />
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/GitHub-7C3AED?style=for-the-badge&logo=github&logoColor=white" />
+  <img src="https://img.shields.io/badge/Jenkins-6D28D9?style=for-the-badge&logo=jenkins&logoColor=white" />
+  <img src="https://img.shields.io/badge/BuildKit-7C3AED?style=for-the-badge&logo=docker&logoColor=white" />
+  <img src="https://img.shields.io/badge/Trivy-6D28D9?style=for-the-badge&logo=aqua&logoColor=white" />
+  <img src="https://img.shields.io/badge/Kustomize-7C3AED?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/Helm-6D28D9?style=for-the-badge&logo=helm&logoColor=white" />
 </p>
 
 ---
 
-## 🟣 Project Overview
+## 🟣 Overview
 
-TaskFlow is a todo application built from three separate services: a Frontend, a Backend API, and a Worker. All three run as containers inside a Kubernetes cluster on Amazon EKS. The database, file storage, and notification services are managed AWS services outside the cluster.
+TaskFlow is a todo application built from three services: a **Frontend** (web interface and sessions), a **Backend** (REST API and business logic) and a **Worker** (notifications). All three are Python and Flask services running under Gunicorn, deployed as containers on an Amazon EKS cluster. The database, file storage and notifications are managed AWS services outside the cluster: Amazon RDS for PostgreSQL, Amazon S3 and Amazon SNS. Users register, manage tasks, attach files to a task and receive email notifications when a task changes.
 
-Users can:
+The second half of this project is the delivery platform. Jenkins runs **inside the same EKS cluster**, in its own namespace, installed entirely from code — Helm values, pinned plugins, Configuration as Code and job definitions all live in this repository. The controller schedules work but never runs it. Every build and every deployment happens on a temporary Agent Pod that is created for that run and deleted with it.
 
-* register an account and log in
-* create, list, complete, and delete todo tasks
-* upload files to a task and open them again
-* receive email notifications when tasks change
-
-Terraform manages the core AWS infrastructure, while Kubernetes manifests define the application workloads. This Kubernetes deployment builds on an earlier EC2 and Ansible version of TaskFlow, preserved in the Git history.
-
----
-
-## 🟣 Current Architecture
-
-The application runs on an Amazon EKS cluster named `taskflow-dev-eks` in the `eu-north-1` region. All Kubernetes application resources live in a dedicated namespace called `devops-app`.
-
-The network is a single Virtual Private Cloud (VPC) with the CIDR block `10.0.0.0/16`. It has three subnet layers, each spread across two Availability Zones:
-
-| Layer | Contents | Internet access |
-| --- | --- | --- |
-| Public subnets | Application Load Balancer (ALB) | Inbound from the internet |
-| Private application subnets | EKS Managed Node Group, 3 Worker Nodes, application Pods | Outbound only |
-| Private database subnets | Amazon RDS for PostgreSQL | None |
-
-There is an important difference between the EKS control plane and the data plane. The control plane is managed by AWS and runs outside the VPC. Kubernetes objects such as Deployments, Services, and ConfigMaps are records held by that control plane, not processes on a server. Only Pods are actually scheduled onto the Worker Nodes inside the private application subnets.
-
----
-
-## 🟣 Architecture Diagram
-
-```mermaid
-flowchart LR
-    User(["User"])
-    Browser(["Browser"])
-
-    subgraph VPC["<b>VPC: taskflow-dev-vpc</b><br/><small>CIDR 10.0.0.0/16</small>"]
-        direction LR
-
-        subgraph PUB["Public subnets · 2 AZs"]
-            ALB["<b>Application Load Balancer</b><br/>internet-facing · HTTP"]
-        end
-
-        subgraph APP["Private-app subnets · internal · 2 AZs · Managed Node Group · 3 Worker Nodes"]
-            direction LR
-            FE["<b>Frontend</b><br/>Pods ×2 · ClusterIP<br/>ServiceAccount: taskflow-frontend<br/>No application IAM role"]
-            BE["<b>Backend</b><br/>Pods ×2 · ClusterIP<br/>ServiceAccount: taskflow-backend<br/>EKS Pod Identity → S3 role"]
-            WK["<b>Worker</b><br/>Pods ×2 · ClusterIP<br/>ServiceAccount: taskflow-worker<br/>EKS Pod Identity → SNS role"]
-        end
-
-        subgraph PDB["Private-db subnets · 2 AZs"]
-            RDS[("<b>Amazon RDS</b> · PostgreSQL<br/>private · SG :5432 from nodes")]
-        end
-    end
-
-    K8S["<b>Amazon EKS Cluster</b> · taskflow-dev-eks<br/>AWS-managed control plane · outside customer VPC<br/>Namespace: devops-app<br/>3 Deployments · 3 ClusterIP Services<br/>Ingress · ConfigMap · 2 Secrets · 3 ServiceAccounts"]
-
-    S3[("<b>Amazon S3</b><br/>private uploads bucket<br/>outside the VPC")]
-    SNS["<b>Amazon SNS</b><br/>notification topic<br/>outside the VPC"]
-    MAIL(["Email subscriber"])
-
-    User --> Browser
-    Browser --> ALB
-    ALB -->|direct to Pod IPs| FE
-    FE -->|HTTP| BE
-    BE -->|HTTP| WK
-    WK -->|publish| SNS
-    SNS --> MAIL
-    BE -->|5432| RDS
-    BE -->|uploads| S3
-    FE -->|presigned download| S3
-
-    linkStyle 0,1,2,3,4,5,6 stroke:#6D28D9,stroke-width:3px
-    linkStyle 7,8,9 stroke:#A78BFA,stroke-width:2px
-
-    classDef entry fill:#DDD6FE,stroke:#7C3AED,stroke-width:2px,color:#1F2937
-    classDef work fill:#EDE9FE,stroke:#6D28D9,stroke-width:2px,color:#1F2937
-    classDef ctx fill:#F5F3FF,stroke:#7C3AED,stroke-width:2px,color:#1F2937
-    classDef ext fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,color:#1F2937
-    classDef vpcbox fill:#F5F3FF,stroke:#6D28D9,stroke-width:3px,color:#4C1D95,font-size:19px
-    classDef zone fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764,font-size:14px
-
-    class User,Browser,ALB,MAIL entry
-    class FE,BE,WK work
-    class K8S ctx
-    class RDS,S3,SNS ext
-    class VPC vpcbox
-    class PUB,APP,PDB zone
-```
-
-**Reading the diagram.** The strong purple line is the main request path: user, browser, load balancer, Frontend, Backend, Worker, and on to SNS and the email subscriber. The lighter purple lines are the Backend and Frontend calls to the data services.
-
-The EKS card lists the Kubernetes API objects, which the AWS-managed control plane holds outside the VPC. Only Pods run on the Worker Nodes in the private application subnets. The workload boxes name the Service, ServiceAccount, and IAM role that apply to each service.
-
-Two details are worth pointing out. The ALB sends traffic straight to Frontend Pod IP addresses, because the Ingress uses `target-type: ip`. The Frontend Service is therefore not a hop in the external request path, even though the Ingress references it and it selects the same Pods. The Ingress itself is a declarative Kubernetes object, not a running proxy; the AWS Load Balancer Controller reads it and applies the matching configuration to the ALB.
-
-The Frontend also reaches S3 on one specific path: when a user opens an uploaded file. That request uses a presigned URL issued by the Backend, so it needs no AWS credentials of its own. The file download section below describes the full path.
-
----
-
-## 🟣 Running Inside and Outside the Cluster
-
-| Inside Kubernetes | Outside Kubernetes |
-| --- | --- |
-| Frontend, Backend, and Worker Pods | Amazon RDS for PostgreSQL |
-| Services, Ingress, ConfigMap, Secrets | Amazon S3 |
-| ServiceAccounts | Amazon SNS |
-| | Application Load Balancer |
-| | Container images in Amazon ECR |
-
-The cluster runs the application code. Persistent application data and notifications use managed AWS services outside the cluster. The ALB is created by AWS but driven by the Kubernetes Ingress object.
-
----
-
-## 🟣 Application Components
-
-| Service | Role | Container Port | Talks to |
-| --- | --- | --- | --- |
-| Frontend | Web interface and user sessions | 8000 | Backend, S3 (file downloads) |
-| Backend | REST API, business logic | 5000 | PostgreSQL, S3, Worker |
-| Worker | Publishes notifications | 6000 | SNS |
-
-All three are Python and Flask services running under Gunicorn. Each one runs with 2 replicas, so a single Pod failure does not take the service down.
-
-Each service exposes `/live` and `/ready` health endpoints. Kubernetes uses `/live` for liveness checks and `/ready` for readiness checks on all three services. The ALB also uses the Frontend `/ready` endpoint as its target health check.
-
-The Frontend has no AWS permissions of its own. It sends all application requests to the Backend. The one time it reaches an AWS service is when a user downloads a file: the Backend issues a short-lived presigned S3 URL, and the Frontend uses that URL to fetch the object. A presigned URL carries its own signature, so this needs no IAM role and no static AWS credentials on the Frontend.
-
----
-
-## 🟣 Traffic Flow
-
-Public traffic enters through one place only:
+The chain from a code change to a running version:
 
 ```text
-Browser
-  -> Application Load Balancer (internet-facing, HTTP)
-    -> Frontend Pods
-      |-- Amazon S3 (file downloads, using a presigned URL)
-      +-- Backend Service -> Backend Pods
-            |-- Amazon RDS PostgreSQL
-            |-- Amazon S3 (file uploads)
-            +-- Worker Service -> Worker Pods
-                  -> Amazon SNS -> Email subscriber
+git push -> GitHub webhook -> ci-application (CI Agent Pod)
+  -> tests, lint, image build, vulnerability scan
+    -> Amazon ECR + image-manifest.json
+      -> application-cd (CD Agent Pod)
+        -> Kustomize release -> rollout -> digest verification -> HTTPS smoke test
 ```
 
-The Backend makes three independent calls. It does not chain through RDS to reach S3, or through S3 to reach the Worker.
+What the platform gives you:
 
-Internal calls use Kubernetes Service discovery. The Frontend reaches the Backend at its Service name, and the Backend reaches the Worker the same way. All three Services are `ClusterIP`, which means they are only reachable from inside the cluster. The Backend and the Worker have no public address of any kind.
+* Jenkins is reproducible from this repository — no manual UI configuration
+* CI and CD are two separate jobs with two separate Jenkinsfiles and two separate identities
+* An image is built once, scanned, pushed, and the exact same digest is deployed
+* CI holds no Kubernetes deployment credential at all
+* A release that fails after the deployment is applied rolls back automatically and keeps the build red
 
 ---
 
-## 🟣 AWS Integrations
+## 🟣 Architecture
 
-| Service | Used by | Purpose |
+The application and the CI/CD platform share one Amazon EKS cluster, `taskflow-dev-eks`, in `eu-north-1`, running Kubernetes 1.35. The network is a single VPC across two Availability Zones, with public subnets for the load balancers, private application subnets for the worker nodes, and private database subnets for RDS.
+
+**Two namespaces, two node groups.**
+
+| | Application | Jenkins |
 | --- | --- | --- |
-| Amazon RDS for PostgreSQL | Backend | Stores users and todos |
-| Amazon S3 | Backend, Frontend | Stores uploaded files |
-| Amazon SNS | Worker | Sends email notifications |
+| Namespace | `devops-app` | `jenkins` |
+| Node group | 3 × `t3.small` | 1 × `m7i-flex.large` |
+| Scheduling | default | label `workload=jenkins`, taint `workload=jenkins:NoSchedule` |
+| Workloads | Frontend, Backend, Worker (2 replicas each) | Jenkins controller + temporary Agent Pods |
 
-**Amazon RDS.** The database runs in the private database subnets and has `publicly_accessible = false`. Its Security Group allows PostgreSQL traffic on port 5432 only from the EKS Worker Node Security Group. The Backend reads the endpoint and database name from the ConfigMap, and the credentials from a Kubernetes Secret.
+Neither namespace is `default`. The taint keeps application Pods off the Jenkins node, and the matching `nodeSelector` and toleration on the controller and both agent templates keep build work off the application nodes.
 
-**Amazon S3.** Uploaded files go to a private bucket with all public access blocked. Traffic reaches S3 through an S3 VPC Gateway Endpoint attached to the private application route table, so it does not leave the AWS network. The Backend uploads files directly, using the permissions from its IAM role.
+**Why Amazon EKS and not on-premises.** TaskFlow already runs on AWS and depends on AWS-managed services such as RDS, S3, SNS and ECR, so a managed cluster in the same account keeps the platform next to the services it uses; it also lets the setup rely on EKS Pod Identity and on Terraform-managed infrastructure consistently, instead of running and maintaining Kubernetes control plane hardware on-premises.
 
-File downloads work differently. The Backend generates a short-lived presigned URL and answers with a redirect to it. The Frontend follows that redirect server-side, fetches the object from S3, and returns the file to the browser. The browser never contacts S3 itself.
+**Why Jenkins runs in the same cluster.** A second EKS cluster would mean a second control plane, a second node group and a second set of AWS resources to pay for and keep in step, for one team and one environment. Instead, separation is enforced where it actually matters: a dedicated namespace, dedicated compute, dedicated ServiceAccounts, and RBAC that is namespace-scoped on both sides. The Jenkins controller has no permissions in `devops-app`. The CI agent runs under its own ServiceAccount but has no Role or RoleBinding, and no Kubernetes API token is mounted into its Pod, so it holds no usable Kubernetes credential and no deploy permissions. Only the CD agent can touch the application, and only the three Deployments it is allowed to patch.
 
-**Amazon SNS.** The Worker publishes a message to an SNS topic when a task is created, completed, or has a file attached. SNS then delivers an email to the confirmed subscriber.
+**Controller.** One permanent Pod in the `jenkins` namespace, from the official Jenkins Helm chart. It runs with `numExecutors: 0` and no node label, so it cannot accept build work even if a job asked for it — every build waits for an Agent Pod. Jenkins home is a 20Gi PersistentVolumeClaim on the `taskflow-gp3` StorageClass (encrypted gp3, `WaitForFirstConsumer`, provisioned by the EBS CSI driver).
+
+**Agents.** Two Pod templates in `jenkins/jcasc/clouds.yaml`: `taskflow-ci` (containers for Python tooling, BuildKit, Trivy, skopeo and the AWS CLI) and `taskflow-cd` (kubectl, Kustomize and the AWS CLI). Both use `podRetention: Never` and `idleMinutes: 0`, so a Pod is created for one build and deleted when it ends. The workspace is an `emptyDir` that the kubelet destroys with the Pod.
+
+**How CD authenticates to the cluster.** There is no kubeconfig anywhere in this repository and no static cluster credential in Jenkins. The CD Agent Pod runs as the `jenkins-cd-agent` ServiceAccount, and its token is projected into the `kubectl` container only — the Pod itself sets `automountServiceAccountToken: false`, so the other containers in the same Pod receive no Kubernetes credential. Before any cluster work, the CD pipeline runs `kubectl auth whoami` and `kubectl auth can-i patch deployment/<service>`, so a missing grant fails the build before any cluster change starts.
+
+**And CI cannot deploy.** The `jenkins-ci-agent` ServiceAccount has no Role and no RoleBinding, and its token is not mounted either. That is a credential boundary, not a policy one: the CI pipeline has no usable credential it could authenticate a deployment with.
+
+### Deployment View
+
+```mermaid
+flowchart TB
+
+%% TaskFlow - Deployment View
+%% Reading the diagram:
+%%   the two sides of the platform are drawn next to each other: the
+%%     application side and the Jenkins side, each reading top to bottom
+%%   solid line  = runtime traffic or control action
+%%   dotted line = configuration or provisioning relationship
+%%   an Ingress is not a traffic hop: each ALB is created from the Ingress
+%%     rule declared inside the namespace, so that relation is dotted
+%%   each ALB uses target-type ip, so runtime traffic reaches Pod endpoints
+%%     directly; a Service object is not a traffic hop either
+%%   a namespace is a logical boundary inside the cluster, not a place: it is
+%%     drawn beside its node group, never inside it, and only Pods are
+%%     scheduled onto nodes - Services, Ingresses, ConfigMaps, Secrets and
+%%     PVCs are namespace-scoped objects and live on no node
+%%   dotted "scheduled onto" line = placement of a namespace's workload Pods
+%%     onto the EC2 nodes of a node group; it is not traffic
+%%   Route 53 and ACM are outside the customer VPC; both ALBs live inside
+%%     it, in the public subnets
+%%   subnet tiers are stated on the blocks that live in them
+%%   build and scan tooling is detailed in the Pipeline Flow diagram
+
+%% ---------------------------------------------------------
+%% EXTERNAL ACTORS
+%% ---------------------------------------------------------
+
+USER["User<br/>browser"]
+GITHUB["GitHub<br/>repository · webhook"]
+OPERATOR["Operator<br/>kubectl"]
+
+subgraph AWS["AWS · eu-north-1"]
+
+    %% -----------------------------------------------------
+    %% PUBLIC ENTRY - DNS AND TLS, OUTSIDE THE CUSTOMER VPC
+    %% -----------------------------------------------------
+
+    APPDNS["taskflow.plus<br/>Route 53 · ACM"]
+
+    WHDNS["jenkins.taskflow.plus<br/>Route 53 · ACM"]
+
+    PF["Operator access<br/>kubectl port-forward<br/>Jenkins UI not public"]
+
+    %% -----------------------------------------------------
+    %% CUSTOMER VPC
+    %% -----------------------------------------------------
+
+    subgraph VPC["Customer VPC · 2 AZs"]
+
+        subgraph PUBSUB["Public subnets"]
+
+            APPALB["Application HTTPS ALB<br/>open to the internet"]
+
+            WHALB["Webhook HTTPS ALB<br/>/github-webhook/<br/>GitHub CIDRs only"]
+
+        end
+
+        subgraph APPSIDE["Application side"]
+        direction TB
+
+            subgraph APPNS["namespace: devops-app · logical boundary in the cluster"]
+            direction TB
+
+                subgraph APPPODS["workload Pods · Deployments"]
+
+                    FRONTEND["Frontend · 2 replicas<br/>SA taskflow-frontend<br/>no AWS role"]
+
+                    BACKEND["Backend · 2 replicas<br/>SA taskflow-backend<br/>Pod Identity → S3"]
+
+                    WORKER["Worker · 2 replicas<br/>SA taskflow-worker<br/>Pod Identity → SNS"]
+
+                end
+
+                APPRES["Namespace-scoped objects<br/>Ingress · ClusterIP Services<br/>ConfigMap · Secrets<br/>on no node"]
+
+            end
+
+            NGAPP["Application Node Group<br/>3 × t3.small<br/>private application subnets"]
+
+            subgraph APPDB["Private database subnets"]
+
+                RDS[("Amazon RDS PostgreSQL<br/>private · no internet")]
+
+            end
+
+        end
+
+        subgraph JENSIDE["Jenkins side"]
+        direction TB
+
+            subgraph JENKINSNS["namespace: jenkins · logical boundary in the cluster"]
+            direction TB
+
+                subgraph JENPODS["Controller and Agent Pods"]
+
+                    CTRL["Jenkins Controller<br/>permanent Pod<br/>numExecutors = 0<br/>no application deploy<br/>permissions"]
+
+                    CIAG["CI Agent · ephemeral<br/>SA jenkins-ci-agent<br/>Pod Identity → ECR push<br/>no Kubernetes deploy access"]
+
+                    CDAG["CD Agent · ephemeral<br/>SA jenkins-cd-agent<br/>limited deploy RBAC<br/>ECR metadata read-only"]
+
+                end
+
+                JSVC["Jenkins Service · ClusterIP<br/>namespace-scoped object<br/>on no node"]
+
+                JRES["Jenkins configuration<br/>JCasC · plugins<br/>Job DSL · Jobs as Code<br/>Kubernetes Secrets<br/>webhook Ingress<br/>on no node"]
+
+                JPVC["PVC · taskflow-gp3<br/>Jenkins home<br/>namespace-scoped object"]
+
+            end
+
+            NGJEN["Jenkins Node Group<br/>1 × m7i-flex.large<br/>private application subnets<br/>taint workload=jenkins:NoSchedule"]
+
+        end
+
+    end
+
+    %% -----------------------------------------------------
+    %% CONTROL PLANE
+    %% -----------------------------------------------------
+
+    KAPI["EKS Control Plane<br/>taskflow-dev-eks<br/>AWS-managed<br/>outside customer VPC"]
+
+    %% -----------------------------------------------------
+    %% AWS-MANAGED SERVICES OUTSIDE THE VPC
+    %% -----------------------------------------------------
+
+    subgraph OUTSIDE["AWS managed services"]
+
+        ECR["Amazon ECR<br/>3 repositories<br/>immutable tags"]
+
+        EBS["Amazon EBS<br/>gp3 · Jenkins home"]
+
+        S3["Amazon S3<br/>private uploads"]
+
+        SNS["Amazon SNS<br/>notifications"]
+
+    end
+
+end
+
+%% ---------------------------------------------------------
+%% PUBLIC ENTRY - RUNTIME TRAFFIC
+%% ---------------------------------------------------------
+
+USER -->|"HTTPS"| APPDNS
+APPDNS --> APPALB
+APPALB -->|"to Pod IP"| FRONTEND
+
+GITHUB -->|"HTTPS webhook"| WHDNS
+WHDNS --> WHALB
+WHALB -->|"HTTP :8080 · to Pod IP"| CTRL
+
+OPERATOR --> PF
+PF -->|"to Controller Pod"| CTRL
+
+%% ---------------------------------------------------------
+%% SCHEDULING - ONLY PODS LAND ON NODES
+%% ---------------------------------------------------------
+
+APPPODS -. "Pods scheduled onto" .-> NGAPP
+JENPODS -. "Pods scheduled onto<br/>tolerate workload=jenkins" .-> NGJEN
+
+%% ---------------------------------------------------------
+%% CONFIGURATION - AN INGRESS IS NOT A TRAFFIC HOP
+%% ---------------------------------------------------------
+
+APPALB -. "declared by Ingress" .-> APPRES
+WHALB -. "declared by Ingress" .-> JRES
+
+JRES -. "configures" .-> CTRL
+JSVC -. "selects Controller Pod" .-> CTRL
+
+%% ---------------------------------------------------------
+%% JENKINS CONTROL / AGENTS
+%% ---------------------------------------------------------
+
+CTRL -->|"schedules work"| CIAG
+CTRL -->|"schedules work"| CDAG
+
+CTRL -->|"creates Agent Pods"| KAPI
+CDAG -->|"deploy · rollout"| KAPI
+
+CIAG -->|"push images"| ECR
+CDAG -->|"verify metadata"| ECR
+
+JPVC -.-> EBS
+
+%% ---------------------------------------------------------
+%% APPLICATION RUNTIME
+%% ---------------------------------------------------------
+
+FRONTEND -->|"HTTP"| BACKEND
+FRONTEND -->|"presigned URL"| S3
+
+BACKEND -->|"/notify"| WORKER
+BACKEND -->|"PostgreSQL"| RDS
+BACKEND -->|"PutObject"| S3
+
+WORKER -->|"Publish"| SNS
+
+%% ---------------------------------------------------------
+%% STYLES
+%% Same purple palette as the Pipeline Flow diagram:
+%%   actor  = outside the platform entirely
+%%   entry  = public entry point into the platform
+%%   work   = running workload Pods
+%%   note   = declared Kubernetes objects and access paths, not workloads
+%%   ctx    = AWS-managed Kubernetes control plane
+%%   ext    = AWS managed services outside the cluster
+%%   nodegrp = EC2 capacity a namespace's Pods are scheduled onto
+%% ---------------------------------------------------------
+
+classDef actor  fill:#F3F4F6,stroke:#4B5563,stroke-width:2px,color:#111827
+classDef entry  fill:#DDD6FE,stroke:#7C3AED,stroke-width:2px,color:#1F2937
+classDef work   fill:#EDE9FE,stroke:#6D28D9,stroke-width:2px,color:#1F2937
+classDef note   fill:#FFFFFF,stroke:#7C3AED,stroke-width:1px,color:#4C1D95
+classDef ctx    fill:#F5F3FF,stroke:#7C3AED,stroke-width:2px,color:#1F2937
+classDef ext    fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,color:#1F2937
+classDef cloud  fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+classDef vpcbox fill:#F5F3FF,stroke:#6D28D9,stroke-width:3px,color:#4C1D95
+classDef zone   fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+classDef nodegrp fill:#F5F3FF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+
+class USER,GITHUB,OPERATOR actor
+class APPDNS,WHDNS,APPALB,WHALB entry
+class FRONTEND,BACKEND,WORKER,CTRL,CIAG,CDAG work
+class PF,APPRES,JSVC,JRES,JPVC note
+class NGAPP,NGJEN nodegrp
+class KAPI ctx
+class RDS,ECR,EBS,S3,SNS ext
+class AWS cloud
+class VPC vpcbox
+class PUBSUB,APPSIDE,APPNS,APPPODS,APPDB,JENSIDE,JENKINSNS,JENPODS,OUTSIDE zone
+```
+
+**Reading the diagram.** The application side and the Jenkins side are drawn next to each other. A namespace is a logical boundary inside the cluster, not a location, so it is drawn beside its node group rather than inside it: only Pods are scheduled onto nodes, while Services, Ingresses, ConfigMaps, Secrets and PVCs are namespace-scoped objects that live on no node. The dotted "scheduled onto" relation shows the placement — the application workload Pods of `devops-app` run on the Application Node Group, and the Jenkins Controller and Agent Pods of `jenkins` tolerate `workload=jenkins:NoSchedule` and run on the Jenkins Node Group. Solid lines are runtime traffic or control actions, dotted lines are configuration. An Ingress is not a hop — the AWS Load Balancer Controller reads it and configures an ALB, and because both use `target-type: ip`, traffic goes straight to Pod addresses. Two public names exist: `taskflow.plus` for the application, and `jenkins.taskflow.plus` for one webhook path. The Jenkins UI has no public route; an operator reaches it through `kubectl port-forward`.
 
 ---
 
-## 🟣 Configuration and Identity
+## 🟣 How a Change Reaches the Application
 
-Configuration is split by sensitivity. Non-sensitive values live in a ConfigMap named `taskflow-config`: the database host, database name and port, the AWS region, the S3 bucket name, the SNS topic ARN, and the internal service URLs. Sensitive values live in Kubernetes Secrets. The Backend reads its database username and password from one Secret, and the Frontend reads its Flask session key from another. The Worker needs no Secret of its own.
+### Pipeline Flow
 
-Real Secret values are never committed. The repository only contains example files with placeholder values, under `k8s/examples/`.
+```mermaid
+%%{init: {'flowchart': {'wrappingWidth': 240}}}%%
+flowchart LR
 
-AWS permissions use **EKS Pod Identity**, not static credentials. Each service has its own ServiceAccount. The Backend and Worker ServiceAccounts are linked to dedicated IAM roles through EKS Pod Identity. The Frontend does not need an application IAM role:
+%% TaskFlow - Pipeline Flow
+%% What happens to a code change, in order, from a Git push to a running version.
+%% Stages are grouped into logical blocks. Inside every block the names are listed
+%% in the order the pipeline runs them.
+%% ---
+%% The diagram reads as one wide line from left to right:
+%%   trigger, then CI, then the hand-off, then CD, then the running release.
+%% Each grouped block is compact inside: CI and CD read top to bottom, the
+%% hand-off is a small stack of what CI leaves behind, and automatic rollback
+%% reads left to right in one low band on the right, under the running release.
+%% Blocks are linked block to block rather than box to box, which is what keeps
+%% each block laid out in its own direction.
+%% ---
+%% Where the components run - VPC, subnets, node groups, storage, application
+%% topology - is covered by the separate Deployment View diagram and is not
+%% repeated here.
+%% Solid lines are the successful path. Dashed lines are failure and recovery.
 
-| ServiceAccount | IAM role | Permissions |
-| --- | --- | --- |
-| `taskflow-frontend` | none | No AWS permissions |
-| `taskflow-backend` | Backend role | S3 object read and write, limited to the uploads prefix |
-| `taskflow-worker` | Worker role | `sns:Publish` on one topic |
+    %% =========================================================
+    %% TRIGGER
+    %% =========================================================
 
-The roles do not overlap. The Backend cannot publish to SNS, and the Worker cannot read the S3 bucket. The Frontend has no application IAM role or Pod Identity association, because it does not need AWS permissions.
+    subgraph TRIG["Trigger"]
+        direction TB
 
----
+        GH["GitHub repository<br/>a developer pushes a commit"]
 
-## 🟣 Terraform and Kubernetes Responsibilities
+        WH["Signed HTTPS webhook<br/>HMAC SHA-256 on every delivery<br/>received by the Jenkins controller,<br/>which schedules the jobs and runs<br/>no build and no deploy work"]
 
-The project uses two tools with a clear split. Terraform builds the AWS infrastructure. Kubernetes manifests describe what runs inside the cluster.
+        GH --> WH
+    end
 
-| Created by Terraform | Created by Kubernetes manifests |
-| --- | --- |
-| VPC, subnets, route tables, gateways | Namespace |
-| EKS cluster and Managed Node Group | Deployments |
-| Amazon ECR repositories | Services |
-| Amazon RDS instance and its Security Group | Ingress |
-| S3 bucket, SNS topic, and email subscription | ConfigMap |
-| IAM roles, policies, and Pod Identity associations | ServiceAccounts |
+    %% =========================================================
+    %% CI
+    %% =========================================================
 
-Two things sit outside both lists. The AWS Load Balancer Controller is installed into the cluster with Helm, and it creates the ALB in response to the Ingress. Kubernetes Secret values are supplied from local files that are excluded from Git, so they are not managed by Terraform and are never committed.
+    subgraph CISEC["CI · job ci-application"]
+        direction TB
+
+        CIINFO["ephemeral CI Agent Pod, created for<br/>this build and deleted with it<br/>SA jenkins-ci-agent · ECR push<br/>no Kubernetes deploy access<br/>no deploy stage in this pipeline"]
+
+        CI1["Checkout · Validation · Lint<br/>Tests · Tag<br/>commit SHA · branch · build number<br/>project structure, lint and unit tests<br/>must all pass<br/>one unique immutable tag for<br/>all three services<br/>the tag must not already exist<br/>in the registry<br/>latest is never produced"]
+
+        CI2["Build · Scan<br/>rootless build, one OCI artifact<br/>per service<br/>built exactly once and never<br/>rebuilt afterwards<br/>the scanner reads those exact<br/>artifacts<br/>a fixable HIGH or CRITICAL finding<br/>stops the build<br/>any secret found in an image<br/>stops the build"]
+
+        CI3["Push · Verify Digest<br/>the scanned artifacts are copied<br/>to Amazon ECR<br/>digests preserved, nothing is<br/>re-encoded or rebuilt<br/>the stored digest is then read<br/>back from the registry<br/>D_build == D_ecr for all<br/>three images<br/>a mismatch fails the build"]
+
+        CI4["Publish Metadata<br/>image-manifest.json is written<br/>Git commit · CI build number<br/>image tag<br/>verified digest for each of the<br/>three services"]
+
+        CIINFO ~~~ CI1
+        CI1 --> CI2
+        CI2 --> CI3
+        CI3 --> CI4
+    end
+
+    CIFAIL(["CI failed<br/>the pipeline stops here<br/>no image is promoted and<br/>application-cd is not started"])
+
+    %% =========================================================
+    %% HAND-OFF
+    %% =========================================================
+
+    subgraph HAND["Artifact and registry hand-off"]
+        direction LR
+
+        MANIFEST["image-manifest.json<br/>archived and fingerprinted<br/>Jenkins artifact<br/>the only place CD reads<br/>digests from"]
+
+        ECR[("Amazon ECR<br/>three repositories<br/>immutable tags<br/>the exact image digests<br/>CI verified")]
+
+        PROMO["CI post success starts<br/>application-cd<br/>promotion branch only<br/>parameters: IMAGE_TAG<br/>CI_BUILD_NUMBER · ENVIRONMENT<br/>RELEASE_NOTE<br/>no rebuild: the artifact tested<br/>by CI is the artifact deployed<br/>by CD"]
+    end
+
+    %% =========================================================
+    %% CD
+    %% =========================================================
+
+    subgraph CDSEC["CD · job application-cd"]
+        direction TB
+
+        CDINFO["ephemeral CD Agent Pod, created for<br/>this deployment and deleted with it<br/>SA jenkins-cd-agent · limited deploy RBAC<br/>ECR read-only<br/>no build stage and no image push"]
+
+        CD1["Prepare<br/>Checkout · Validate Parameters<br/>Authenticate · Fetch CI Metadata<br/>the deployment manifests are<br/>checked out<br/>an empty, malformed or latest tag<br/>is rejected<br/>the target namespace comes from<br/>an allow list<br/>in-cluster ServiceAccount, deploy<br/>rights confirmed before any work<br/>copyArtifacts brings<br/>image-manifest.json from that<br/>specific CI build"]
+
+        CD2["Verify<br/>Verify Provenance · Verify Registry<br/>the manifest must describe that<br/>CI job, that build and that tag<br/>repository names are owned by this<br/>pipeline, not read from the artifact<br/>each digest must exist in Amazon ECR<br/>and still carry that tag<br/>read-only lookup: nothing is built<br/>and nothing is pushed"]
+
+        CD3["Render and Plan<br/>Render Release · Validate Manifests<br/>Release Plan · Capture Previous State<br/>the release overlay is pinned to<br/>those exact verified digests<br/>server-side dry run over the<br/>release scope<br/>the full release plan is printed<br/>before anything changes<br/>the digests running now are recorded<br/>first, as the state to return to"]
+
+        CD4["Deploy<br/>Deploy · Rollout · Verify Release<br/>Smoke Test<br/>applied to namespace devops-app<br/>waits until every Deployment<br/>has rolled out<br/>the running Pod digests are compared<br/>with the verified digests<br/>the smoke test runs last,<br/>after that verification"]
+
+        CDINFO ~~~ CD1
+        CD1 --> CD2
+        CD2 --> CD3
+        CD3 --> CD4
+    end
+
+    CDPRE(["Failed before Deploy<br/>the environment is unchanged<br/>no rollback is required"])
+
+    OK(["Running TaskFlow<br/>the exact image digests CI built,<br/>scanned and verified<br/>runtime digests confirmed<br/>after the rollout"])
+
+    LEG["Legend<br/>CI builds once. CD never rebuilds an image.<br/>The exact digest is preserved end to end.<br/>A release that fails after Deploy triggers<br/>an automatic rollback."]
+
+    %% =========================================================
+    %% AUTOMATIC ROLLBACK - ONE LOW BAND UNDER THE RUNNING RELEASE
+    %% =========================================================
+
+    subgraph RBK["Automatic rollback · runs when a release fails after it was applied"]
+        direction LR
+
+        RB1["Collect diagnostics · Drift check<br/>Deployments, events and logs<br/>of unhealthy Pods collected first,<br/>before anything is changed back<br/>the declared Pod template and<br/>every running Pod compared with<br/>the recorded previous state"]
+
+        RB2["Primary · kubectl rollout undo<br/>on the drifted Deployments only,<br/>then wait for the rollout<br/>the restored runtime state<br/>is verified"]
+
+        RB3["Fallback · reapply the recorded<br/>previous digests and their<br/>provenance annotations from<br/>previous-images.json,<br/>then wait for the rollout<br/>the restored runtime state<br/>is verified again"]
+
+        PREV["previous-images.json<br/>recorded digests and provenance<br/>archived with the build<br/>read by the rollback fallback"]
+
+        RBNOT["Rollback not needed<br/>nothing was changed<br/>every Deployment still matches<br/>the recorded state"]
+
+        RESTORED(["Previous known state restored<br/>the build stays FAILED:<br/>the release did not deploy"])
+
+        RBFAIL(["ROLLBACK FAILED<br/>the environment needs manual<br/>attention<br/>the recorded previous state<br/>stays archived with the build"])
+
+        RB1 -.->|"no drift"| RBNOT
+        RB1 -->|"drifted Deployments"| RB2
+        RB2 -->|"state restored"| RESTORED
+        RB2 -.->|"undo failed or<br/>state not restored"| RB3
+        PREV -.-> RB3
+        RB3 -->|"state restored"| RESTORED
+        RB3 -.-> RBFAIL
+    end
+
+    %% =========================================================
+    %% BLOCK TO BLOCK
+    %% =========================================================
+
+    TRIG -->|"starts ci-application"| CISEC
+    CISEC -->|"images pushed and digests<br/>read back · image-manifest.json<br/>archived"| HAND
+    HAND -->|"promotion: the artifact tested<br/>by CI is the artifact deployed"| CDSEC
+    CDSEC --> OK
+
+    CISEC -.->|"a CI gate fails"| CIFAIL
+    CDSEC -.->|"failure in Prepare, Verify or<br/>Render and Plan"| CDPRE
+    CDSEC -.->|"release failed in Deploy, Rollout,<br/>Verify Release or Smoke Test"| RBK
+
+    CDSEC ~~~ LEG
+
+    %% =========================================================
+    %% STYLES
+    %% =========================================================
+
+    classDef entry fill:#DDD6FE,stroke:#7C3AED,stroke-width:2px,color:#1F2937
+    classDef step fill:#EDE9FE,stroke:#6D28D9,stroke-width:2px,color:#1F2937
+    classDef ext fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,color:#1F2937
+    classDef good fill:#D1FAE5,stroke:#047857,stroke-width:2px,color:#1F2937
+    classDef fail fill:#FEF3C7,stroke:#B45309,stroke-width:2px,color:#1F2937
+    classDef zone fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+    classDef legend fill:#FFFFFF,stroke:#9CA3AF,stroke-width:1px,color:#374151
+    classDef note fill:#FFFFFF,stroke:#7C3AED,stroke-width:1px,color:#4C1D95
+
+    class WH,PROMO entry
+    class CI1,CI2,CI3,CI4 step
+    class CD1,CD2,CD3,CD4 step
+    class RB1,RB2,RB3 step
+    class GH,ECR,MANIFEST,PREV ext
+    class CIINFO,CDINFO note
+    class OK,RESTORED good
+    class CIFAIL,CDPRE,RBNOT,RBFAIL fail
+    class TRIG,CISEC,HAND,CDSEC,RBK zone
+    class LEG legend
+```
+
+A push to the configured branch reaches the Jenkins controller as a signed GitHub webhook. The controller starts `ci-application`, which runs on a fresh CI Agent Pod: it validates the repository, lints, tests, builds one image per service with rootless BuildKit, scans those artifacts with Trivy, pushes them to Amazon ECR and reads the stored digests back to prove nothing changed on the way. The run ends by writing `image-manifest.json`, which records the Git commit, the CI build, the image tag and the verified digest of each service.
+
+**How CI hands over to CD.** Only on `success`, and only for the promotion branch, the CI pipeline calls `build job: 'application-cd'` with `IMAGE_TAG` and `CI_BUILD_NUMBER` (plus `ENVIRONMENT` and a release note). It does not wait for the deployment and it does not deploy anything itself — it still holds no cluster credential. `application-cd` then uses `copyArtifacts` to fetch `image-manifest.json` from that exact CI build, checks that the manifest really describes that job, that build number and that tag, and deploys the digests recorded in it. Nothing is rebuilt in CD.
+
+**Traceability.** Every deployment can be walked back:
+
+```text
+Git commit -> ci-application #N -> unique image tag -> verified sha256 digest
+   -> application-cd #M -> Deployment annotations + running Pod image digest
+```
+
+The CD build prints the whole chain in its release plan, archives the manifest it used, and writes `kubernetes.io/change-cause` on each Deployment plus `taskflow.io/git-commit`, `taskflow.io/ci-build`, `taskflow.io/image-tag` and `taskflow.io/deployed-by` on the Pod template. The verification stage reads those annotations and the running image back from the cluster and fails if they do not match the release.
 
 ---
 
 ## 🟣 Repository Structure
 
 ```text
-TaskFlow/
-├── backend/                  # Backend API service and its Dockerfile
-├── frontend/                 # Frontend web service and its Dockerfile
-├── worker/                   # Worker notification service and its Dockerfile
+taskflow-devops/
+├── ci-Jenkinsfile              # CI pipeline: test, build, scan, push. No deploy stage
+├── cd-Jenkinsfile              # CD pipeline: deploy a digest CI already verified
 │
-├── k8s/                      # Kubernetes manifests, applied in numbered order
-│   ├── 00-namespace.yaml
-│   ├── 10-serviceaccounts.yaml
-│   ├── 20-configmap.yaml
-│   ├── 30-backend-deployment.yaml
-│   ├── 31-backend-service.yaml
-│   ├── 40-worker-deployment.yaml
-│   ├── 41-worker-service.yaml
-│   ├── 50-frontend-deployment.yaml
-│   ├── 51-frontend-service.yaml
-│   ├── 60-ingress.yaml
-│   └── examples/             # Secret templates with placeholder values
+├── backend/                    # Backend API service, Dockerfile and tests
+├── frontend/                   # Frontend web service, Dockerfile and tests
+├── worker/                     # Worker notification service, Dockerfile and tests
 │
-├── terraform/                # AWS infrastructure
-│   ├── network.tf            # VPC, subnets, routing, S3 VPC endpoint
-│   ├── eks.tf                # EKS cluster and Managed Node Group
-│   ├── application_iam.tf    # Pod Identity roles for Backend and Worker
-│   ├── lb_controller.tf      # IAM setup for the AWS Load Balancer Controller
-│   ├── ecr.tf                # Container image repositories
-│   ├── rds.tf                # PostgreSQL database
-│   ├── s3.tf                 # Uploads bucket
-│   ├── sns.tf                # Notification topic and email subscription
-│   └── security_groups.tf    # Database access rules
+├── jenkins/
+│   ├── chart.env               # Pinned Helm chart version and its SHA256
+│   ├── values.yaml             # Controller values: image, plugins, probes, securityContext
+│   ├── namespace.yaml          # The jenkins namespace
+│   ├── storageclass-gp3.yaml   # Encrypted gp3 StorageClass for Jenkins home
+│   ├── webhook-ingress.yaml    # Public HTTPS entry point, one path only
+│   ├── jcasc/                  # Configuration as Code: system, clouds, credentials, github, jobs
+│   ├── rbac/                   # Controller Role, agent ServiceAccounts, CD Role
+│   └── examples/               # Secret templates with placeholder values
 │
-├── ansible/                  # From the earlier EC2 deployment
-├── nginx/                    # From the earlier EC2 deployment
-├── systemd/                  # From the earlier EC2 deployment
+├── scripts/
+│   ├── install-jenkins.sh      # Create the installation from this repository
+│   ├── configure-jenkins.sh    # Reconcile an existing installation
+│   ├── create-jobs.sh          # Apply and verify the two pipeline jobs
+│   ├── verify-jenkins.sh       # Read-only checks against this repository
+│   ├── uninstall-jenkins.sh    # Remove Jenkins, with explicit data acknowledgement
+│   ├── jenkins-common.sh       # Shared Jenkins preflight, chart verification and Secret checks
+│   ├── bootstrap-app.sh        # First-time application deployment from k8s/base
+│   ├── configure-app-dns.sh    # Route 53 alias for taskflow.plus
+│   ├── configure-webhook-dns.sh# Route 53 alias for jenkins.taskflow.plus
+│   ├── check-webhook-cidrs.sh  # Compare pinned GitHub hook ranges with the published list
+│   └── validate-repository.py  # Structural validation used by the CI pipeline
 │
-├── .gitignore
-└── README.md
+├── k8s/
+│   ├── base/                   # Namespace, ServiceAccounts, ConfigMap, Services, Ingress
+│   │   └── deployments/        # The three Deployments, shared by both targets
+│   ├── overlays/release/       # Release scope: only the three Deployments
+│   └── examples/               # Secret templates with placeholder values
+│
+├── terraform/                  # VPC, EKS, node groups, RDS, S3, SNS, ECR, IAM, ACM
+└── diagrams/                   # Mermaid sources for the two diagrams above
 ```
 
-The `k8s/` files are numbered in the order they should be applied, so lower numbers create the resources that later ones depend on.
-
-The `ansible/`, `nginx/`, and `systemd/` directories belong to the earlier EC2 deployment. They are kept for reference and are not used by the Kubernetes setup.
-
----
-
-## 🟣 Container Images
-
-Each service has its own Dockerfile and its own repository in Amazon ECR. Images are built from `python:3.12-slim-bookworm` and run as a non-root user with a fixed UID and GID of 1000.
-
-Every image is published with a fixed version tag. The `latest` tag is never used, and the ECR repositories are set to immutable tags, so an existing tag cannot be overwritten by a later push. ECR scans each image when it is pushed.
-
-Inside the cluster, containers run with a restrictive security context: no privilege escalation, a read-only root filesystem, and all Linux capabilities dropped. Each Pod also declares CPU and memory requests and limits.
+The `ansible/`, `nginx/` and `systemd/` directories are the deployment tooling from the earlier EC2 version of TaskFlow and are kept for reference only; nothing in the Kubernetes setup uses them.
 
 ---
 
 ## 🟣 Prerequisites
 
-You need the following tools installed and working:
+Versions used by this setup:
 
-* AWS CLI, with credentials configured for the target account
-* Terraform
-* Docker
-* kubectl
-* Helm
-* Python 3
-* curl
+| Component | Version | Where it is defined |
+| --- | --- | --- |
+| Kubernetes (Amazon EKS) | 1.35 | `terraform/variables.tf` |
+| Terraform | >= 1.11.0 | `terraform/versions.tf` |
+| AWS provider | ~> 6.58 | `terraform/versions.tf` |
+| `terraform-aws-modules/eks` | 21.24.2 | `terraform/eks.tf` |
+| Jenkins Helm chart | 5.9.54, verified by SHA256 | `jenkins/chart.env` |
+| Jenkins controller image | `jenkins/jenkins:2.568.2-jdk21` | `jenkins/values.yaml` |
+| Jenkins plugins | 14 plugins, each pinned | `jenkins/values.yaml` |
+| AWS Load Balancer Controller | 3.5.0 | the documented install command below; its IAM policy is in `terraform/lb_controller.tf` |
+| Ruff / pytest / pytest-cov / PyYAML | 0.16.3 / 9.1.1 / 7.1.0 / 6.0.3 | `requirements-dev.txt` |
+| Agent container images | pinned by digest | `jenkins/jcasc/clouds.yaml` |
 
-You also need permission to create the AWS resources described above in the `eu-north-1` region.
+Local tools: `aws`, `kubectl`, `helm`, `terraform`, `git`, `curl`, `bash` 4 or newer, `sha256sum`, `python3`. You also need an AWS account with permission to create the resources above in `eu-north-1`, a registered domain, and a Route 53 public hosted zone for it.
+
+### Values to change for another account or environment
+
+None of these are secrets, but all of them are specific to this deployment:
+
+| Value | Current | Where |
+| --- | --- | --- |
+| ECR registry (AWS account id) | `034869165452.dkr.ecr.eu-north-1.amazonaws.com` | `ci-Jenkinsfile`, `cd-Jenkinsfile`, both `kustomization.yaml` files |
+| AWS region | `eu-north-1` | Jenkinsfiles, `terraform.tfvars`, script defaults |
+| EKS cluster name | `taskflow-dev-eks` | `EXPECTED_CLUSTER_NAME` in the scripts, `TARGET_CLUSTER` in `cd-Jenkinsfile` |
+| Domain names | `taskflow.plus`, `jenkins.taskflow.plus` | `terraform.tfvars`, `k8s/base/60-ingress.yaml`, `jenkins/webhook-ingress.yaml` |
+| Repository URL and branch | this repository, branch `jenkins-cicd` | `jenkins/jcasc/jobs.yaml`, `PROMOTION_BRANCH` in `ci-Jenkinsfile` |
+| Environment endpoints | RDS host, S3 bucket, SNS topic | `k8s/base/20-configmap.yaml`, from your own Terraform outputs |
 
 ---
 
-## 🟣 Infrastructure Prerequisite
+## 🟣 Reproduce This Setup
 
-Terraform builds the AWS resources the application runs on, so it must be applied before anything is deployed to Kubernetes.
+Everything below runs from the repository root. Nothing is configured by hand in the Jenkins UI; the only manual external step is registering the webhook on GitHub, documented in step 8.
 
-Every command in this guide is run from the repository root.
-
-Start from the tracked example file and fill in your own values:
+### 1. Infrastructure
 
 ```bash
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-```
+# fill in: db_username, admin_access_cidr (your own /32), sns_notification_email, domain_name
 
-Three values in `terraform/terraform.tfvars` are specific to you and must be replaced:
-
-| Variable | What to put there |
-| --- | --- |
-| `db_username` | the master username for the PostgreSQL instance |
-| `admin_access_cidr` | your own public IP as an exact `/32`, never a wider range |
-| `sns_notification_email` | the address that will receive notifications |
-
-`terraform/terraform.tfvars` is excluded from Git and must never be committed. The remaining values in the example file are working defaults.
-
-Then create the infrastructure:
-
-```bash
 terraform -chdir=terraform init
 terraform -chdir=terraform validate
 terraform -chdir=terraform plan
 terraform -chdir=terraform apply
-```
 
-Once the cluster exists, point kubectl at it and confirm the nodes are up:
-
-```bash
 aws eks update-kubeconfig --region eu-north-1 --name taskflow-dev-eks
 kubectl get nodes
 ```
 
----
+`terraform.tfvars` is excluded from Git. Terraform reads the Route 53 hosted zone as a data source and never owns it, so a later `destroy` cannot remove the zone or your domain.
 
-## 🟣 Build and Push Images
+### 2. AWS Load Balancer Controller
 
-Resolve the registry address from the current AWS identity rather than hardcoding an account number, then log Docker in to ECR:
-
-```bash
-AWS_REGION=eu-north-1
-ECR_REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
-
-aws ecr get-login-password --region "$AWS_REGION" \
-  | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-```
-
-Pick the version you are publishing. Each push needs a tag that does not exist yet, because the ECR repositories use immutable tags:
-
-```bash
-BACKEND_TAG="vX.Y.Z"
-FRONTEND_TAG="vX.Y.Z"
-WORKER_TAG="vX.Y.Z"
-```
-
-Replace `vX.Y.Z` with a new, unused version tag for each service before running the build and push commands below.
-
-Build each service from its own directory:
-
-```bash
-docker build --provenance=false -t "$ECR_REGISTRY/taskflow-dev-backend:$BACKEND_TAG"   backend/
-docker build --provenance=false -t "$ECR_REGISTRY/taskflow-dev-frontend:$FRONTEND_TAG" frontend/
-docker build --provenance=false -t "$ECR_REGISTRY/taskflow-dev-worker:$WORKER_TAG"     worker/
-```
-
-This project disables default build provenance so that pushed images use the single-image manifest format verified with its ECR basic-scanning workflow.
-
-Push the images:
-
-```bash
-docker push "$ECR_REGISTRY/taskflow-dev-backend:$BACKEND_TAG"
-docker push "$ECR_REGISTRY/taskflow-dev-frontend:$FRONTEND_TAG"
-docker push "$ECR_REGISTRY/taskflow-dev-worker:$WORKER_TAG"
-```
-
-The versions currently deployed are `v0.1.3` for Backend, `v0.1.3` for Frontend, and `v0.1.2` for Worker. Those tags already exist and cannot be pushed again, so publishing a change always means choosing a new version. The `latest` tag is never used.
-
-After pushing, update the `image:` line in the matching Deployment manifest before applying it.
-
----
-
-## 🟣 Create the Namespace
-
-All application resources live in their own namespace:
-
-```bash
-kubectl apply -f k8s/00-namespace.yaml
-```
-
----
-
-## 🟣 Create the Kubernetes Secrets
-
-The repository tracks only example Secret files under `k8s/examples/`. They contain placeholder values and use object names ending in `-example`. They are not part of the deployment sequence and must not be applied to the cluster. The real Secrets are created locally and stay out of Git.
-
-Set a restrictive umask first, so the files are created with owner-only permissions from the start:
-
-```bash
-umask 077
-```
-
-The database password is managed by RDS and stored in AWS Secrets Manager. Read it and write the manifest in one step, so no value is printed, passed as a command-line argument, or left in shell history:
-
-```bash
-DB_SECRET_ARN=$(aws rds describe-db-instances \
-  --db-instance-identifier taskflow-dev-rds-postgres \
-  --region eu-north-1 \
-  --query "DBInstances[0].MasterUserSecret.SecretArn" \
-  --output text)
-
-aws secretsmanager get-secret-value \
-  --secret-id "$DB_SECRET_ARN" \
-  --region eu-north-1 \
-  --query SecretString --output text \
-| python3 -c '
-import json, pathlib, sys
-c = json.load(sys.stdin)
-doc = (
-    "apiVersion: v1\n"
-    "kind: Secret\n"
-    "metadata:\n"
-    "  name: taskflow-db-credentials\n"
-    "  namespace: devops-app\n"
-    "  labels:\n"
-    "    app.kubernetes.io/name: backend\n"
-    "    app.kubernetes.io/part-of: taskflow\n"
-    "type: Opaque\n"
-    "stringData:\n"
-    "  DB_USER: " + json.dumps(c["username"]) + "\n"
-    "  DB_PASSWORD: " + json.dumps(c["password"]) + "\n"
-)
-p = pathlib.Path("k8s/secret-backend-db.yaml")
-p.write_text(doc)
-p.chmod(0o600)
-print("wrote", p)
-'
-```
-
-The Frontend session key is generated locally and written the same way:
-
-```bash
-python3 -c '
-import json, pathlib, secrets
-doc = (
-    "apiVersion: v1\n"
-    "kind: Secret\n"
-    "metadata:\n"
-    "  name: taskflow-frontend-secret\n"
-    "  namespace: devops-app\n"
-    "  labels:\n"
-    "    app.kubernetes.io/name: frontend\n"
-    "    app.kubernetes.io/part-of: taskflow\n"
-    "type: Opaque\n"
-    "stringData:\n"
-    "  SECRET_KEY: " + json.dumps(secrets.token_hex(32)) + "\n"
-)
-p = pathlib.Path("k8s/secret-frontend.yaml")
-p.write_text(doc)
-p.chmod(0o600)
-print("wrote", p)
-'
-```
-
-Check the permissions, and confirm Git ignores both files:
-
-```bash
-ls -l k8s/secret-backend-db.yaml k8s/secret-frontend.yaml
-git check-ignore -v k8s/secret-backend-db.yaml k8s/secret-frontend.yaml
-```
-
-The Worker needs no Secret of its own.
-
----
-
-## 🟣 Deploy TaskFlow
-
-Apply the manifests in this order. It is the project's dependency-aware sequence: the namespace comes first, then identity and configuration, then the Secrets the workloads read, then the workloads themselves, and finally the Ingress that exposes the Frontend.
-
-```bash
-kubectl apply -f k8s/00-namespace.yaml
-kubectl apply -f k8s/10-serviceaccounts.yaml
-```
-
-`k8s/20-configmap.yaml` is tracked with the values from this project's own deployment. `DB_HOST`, `S3_BUCKET_NAME`, and `SNS_TOPIC_ARN` are environment-specific, non-sensitive configuration — not Secrets — and must match the AWS resources your own `terraform apply` created, not the ones already in the cloned file. Update them from your current Terraform outputs before applying the ConfigMap:
-
-```bash
-export RDS_ADDRESS=$(terraform -chdir=terraform output -raw rds_address)
-export S3_BUCKET=$(terraform -chdir=terraform output -raw s3_bucket_name)
-export SNS_ARN=$(terraform -chdir=terraform output -raw sns_topic_arn)
-
-python3 -c '
-import json, os, pathlib, re, sys
-
-path = pathlib.Path("k8s/20-configmap.yaml")
-text = path.read_text()
-
-def set_value(text, key, value):
-    pattern = re.compile(r"^(\s*" + re.escape(key) + r":\s*).*$", re.MULTILINE)
-    text, count = pattern.subn(lambda m: m.group(1) + json.dumps(value), text)
-    if count != 1:
-        sys.exit(f"expected exactly one {key!r} line in k8s/20-configmap.yaml, found {count}")
-    return text
-
-text = set_value(text, "DB_HOST", os.environ["RDS_ADDRESS"])
-text = set_value(text, "S3_BUCKET_NAME", os.environ["S3_BUCKET"])
-text = set_value(text, "SNS_TOPIC_ARN", os.environ["SNS_ARN"])
-
-path.write_text(text)
-print("updated DB_HOST, S3_BUCKET_NAME, SNS_TOPIC_ARN in", path)
-'
-```
-
-Check the three values before applying:
-
-```bash
-grep -E "DB_HOST|S3_BUCKET_NAME|SNS_TOPIC_ARN" k8s/20-configmap.yaml
-```
-
-After this, `k8s/20-configmap.yaml` will show as locally modified — expected, since it now carries your environment's values. Treat that change the same way as the `image:` line updates elsewhere in this guide: review it before any future commit, and don't carry one environment's values into another.
-
-```bash
-kubectl apply -f k8s/20-configmap.yaml
-kubectl apply -f k8s/secret-backend-db.yaml
-kubectl apply -f k8s/secret-frontend.yaml
-kubectl apply -f k8s/30-backend-deployment.yaml
-kubectl apply -f k8s/31-backend-service.yaml
-kubectl apply -f k8s/40-worker-deployment.yaml
-kubectl apply -f k8s/41-worker-service.yaml
-kubectl apply -f k8s/50-frontend-deployment.yaml
-kubectl apply -f k8s/51-frontend-service.yaml
-kubectl apply -f k8s/60-ingress.yaml
-```
-
-Wait for the rollouts to finish:
-
-```bash
-kubectl rollout status deployment/backend  -n devops-app
-kubectl rollout status deployment/worker   -n devops-app
-kubectl rollout status deployment/frontend -n devops-app
-```
-
-The Ingress takes a short while to provision the load balancer. Once it reports an address, open that address in a browser:
-
-```bash
-kubectl get ingress -n devops-app
-```
-
----
-
-## 🟣 Verify the Deployment
-
-### Cluster and application state
-
-```bash
-kubectl get nodes
-kubectl get namespaces
-kubectl get pods -n devops-app
-kubectl get deployments -n devops-app
-kubectl get services -n devops-app
-kubectl get ingress -n devops-app
-```
-
-A healthy environment shows the worker nodes `Ready`, the `devops-app` namespace `Active`, six Pods `Running` and Ready, and all three Deployments at `2/2`.
-
-All three Services are `ClusterIP` and report no external IP, so Backend and Worker have no external Service endpoint. The ALB is the only entry point from outside the cluster.
-
-To inspect an individual Pod, take its name from the current state rather than typing one in:
-
-```bash
-BACKEND_POD=$(kubectl get pods -n devops-app \
-  -l app.kubernetes.io/name=backend \
-  -o jsonpath='{.items[0].metadata.name}')
-
-kubectl describe pod "$BACKEND_POD" -n devops-app
-kubectl logs "$BACKEND_POD" -n devops-app
-```
-
-`describe` shows the image, probes, resource limits, security context and recent events. `logs` shows the Gunicorn startup output.
-
-### External access
-
-```bash
-ALB_HOST=$(kubectl get ingress frontend -n devops-app \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-
-echo "$ALB_HOST"
-
-curl -s -o /dev/null -w "GET /       -> %{http_code}\n" "http://$ALB_HOST/"
-curl -s -o /dev/null -w "GET /health -> %{http_code}\n" "http://$ALB_HOST/health"
-```
-
-`/` returns HTTP 302 because unauthenticated visitors are redirected to the login page, so that response is expected rather than an error. `/health` returns HTTP 200 and confirms the Frontend is reachable through the load balancer. The application itself opens at `http://<ALB hostname>/` in a browser.
-
-### Application integrations
-
-**Frontend to Backend.** The application images contain Python but no `curl` or `wget`, so the check runs through Python:
-
-```bash
-FRONTEND_POD=$(kubectl get pods -n devops-app \
-  -l app.kubernetes.io/name=frontend \
-  -o jsonpath='{.items[0].metadata.name}')
-
-kubectl exec -n devops-app "$FRONTEND_POD" -- python3 -c "
-import urllib.request
-r = urllib.request.urlopen('http://backend:5000/health', timeout=5)
-print(r.status, r.read().decode().strip())
-"
-```
-
-HTTP 200 proves both that Kubernetes Service DNS resolves the name `backend` and that a Frontend Pod can reach the Backend Service.
-
-**Backend to the database.** This is read-only and prints no credentials:
-
-```bash
-BACKEND_POD=$(kubectl get pods -n devops-app \
-  -l app.kubernetes.io/name=backend \
-  -o jsonpath='{.items[0].metadata.name}')
-
-kubectl exec -n devops-app "$BACKEND_POD" -- python3 -c "
-import os, psycopg2
-conn = psycopg2.connect(
-    host=os.environ['DB_HOST'],
-    dbname=os.environ['DB_NAME'],
-    user=os.environ['DB_USER'],
-    password=os.environ['DB_PASSWORD'],
-    port=os.environ['DB_PORT'],
-    connect_timeout=5
-)
-cur = conn.cursor()
-cur.execute('SELECT 1')
-print('SELECT 1 ->', cur.fetchone()[0])
-conn.close()
-"
-```
-
-`SELECT 1 -> 1` confirms that the Backend reaches PostgreSQL and authenticates successfully.
-
-**File storage.** Storage is verified through the application, since that is what exercises the upload and download path:
-
-1. In TaskFlow, create a clearly named test task.
-2. Attach a small test file to it.
-3. Open the file again from the task.
-
-Step three returns the file through a short-lived presigned URL. You can optionally confirm from the AWS side that an object exists under the application's prefix:
-
-```bash
-BUCKET=$(kubectl get configmap taskflow-config -n devops-app \
-  -o jsonpath='{.data.S3_BUCKET_NAME}')
-
-aws s3api list-objects-v2 \
-  --bucket "$BUCKET" \
-  --prefix uploads/ \
-  --query "Contents[].Key" \
-  --output table
-```
-
-**Notifications.** First check that the subscription is in place:
-
-```bash
-TOPIC_ARN=$(kubectl get configmap taskflow-config -n devops-app \
-  -o jsonpath='{.data.SNS_TOPIC_ARN}')
-
-aws sns get-topic-attributes \
-  --topic-arn "$TOPIC_ARN" \
-  --query "Attributes.{Confirmed:SubscriptionsConfirmed,Pending:SubscriptionsPending}" \
-  --output table
-```
-
-One confirmed subscription and none pending means the topic is wired up, but that only verifies configuration. To test delivery, mark the test task as completed in TaskFlow and check that the subscribed address receives the notification email. The email is what proves the full path from the application through the Worker to SNS.
-
-These functional integration tests create real application data, so use clearly identifiable test tasks and files.
-
-### Optional self-healing test
-
-This test deliberately deletes one Backend Pod to demonstrate the Pod restart and continued operation required by the assignment. It is not part of a normal deployment — you do not need to run it every time you redeploy.
-
-```bash
-kubectl get pods -n devops-app -l app.kubernetes.io/name=backend
-
-BACKEND_POD=$(kubectl get pods -n devops-app \
-  -l app.kubernetes.io/name=backend \
-  -o jsonpath='{.items[0].metadata.name}')
-
-kubectl delete pod "$BACKEND_POD" -n devops-app
-```
-
-Watch the replacement appear, and wait until it reports `Running` and Ready before judging the result. Stop the watch with Ctrl+C:
-
-```bash
-kubectl get pods -n devops-app \
-  -l app.kubernetes.io/name=backend \
-  --watch
-```
-
-Then confirm the final state:
-
-```bash
-kubectl get deployment backend -n devops-app
-kubectl get pods -n devops-app -l app.kubernetes.io/name=backend
-```
-
-The Deployment returns to `2/2`, and two Backend Pods are Ready under a new Pod name.
-
-Finally, confirm the application still responds:
-
-```bash
-ALB_HOST=$(kubectl get ingress frontend -n devops-app \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-
-curl -s -o /dev/null -w "GET /health -> %{http_code}\n" "http://$ALB_HOST/health"
-```
-
-HTTP 200 after the replacement Pod is Ready completes the test: the Pod was replaced, the desired replica count was restored, and the application kept working. It stays available throughout, because the second replica keeps serving traffic while the replacement starts.
-
----
-
-## 🟣 Required Manual Actions
-
-Some steps are not covered by `terraform apply` or `kubectl apply` and have to be done by a person.
-
-### Initial environment setup
-
-These are done once per environment, not on every application deployment.
-
-| Action | Why it is manual |
-| --- | --- |
-| Configure kubeconfig | `aws eks update-kubeconfig --region eu-north-1 --name taskflow-dev-eks` gives your local kubectl access to the cluster |
-| Install the AWS Load Balancer Controller | It is a cluster add-on installed with Helm, not part of the application manifests. Without it, the Ingress never produces a load balancer |
-| Confirm the SNS subscription | AWS emails a confirmation link to the address in `terraform.tfvars`. Terraform creates the subscription, but only the recipient can confirm it. Notifications are not delivered until then. This can be done any time after `terraform apply` |
-
-The controller is installed as follows. The ServiceAccount name must match the one Terraform used when it created the Pod Identity association, otherwise the controller gets no AWS permissions:
+Both Ingress objects need it. Its permissions come from the EKS Pod Identity association Terraform created, so the ServiceAccount name must match exactly:
 
 ```bash
 helm repo add eks https://aws.github.io/eks-charts
 helm repo update eks
 
 helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  --namespace kube-system \
-  --version 3.5.0 \
+  --namespace kube-system --version 3.5.0 \
   --set clusterName=taskflow-dev-eks \
   --set region=eu-north-1 \
   --set vpcId="$(terraform -chdir=terraform output -raw vpc_id)" \
   --set serviceAccount.create=true \
-  --set serviceAccount.name=aws-load-balancer-controller \
-  --set resources.requests.cpu=100m \
-  --set resources.requests.memory=128Mi \
-  --set resources.limits.memory=256Mi \
-  --set 'securityContext.capabilities.drop[0]=ALL' \
-  --set securityContext.seccompProfile.type=RuntimeDefault
+  --set serviceAccount.name=aws-load-balancer-controller
 ```
 
-The ServiceAccount carries no IAM role annotation. Permissions come from the EKS Pod Identity association that Terraform creates for the `kube-system` namespace and this ServiceAccount name, which is why Terraform runs before Helm.
+### 3. Create the Kubernetes Secrets
 
-### Application deployment and updates
+The repository tracks only example files with placeholder values. Real Secret manifests stay out of Git — `/k8s/secret-*.yaml` and `/jenkins/secret-*.yaml` are ignored. Create all four the same way, and apply them **server-side**: a client-side apply would copy the whole manifest, secret values included, into the `kubectl.kubernetes.io/last-applied-configuration` annotation.
 
-These are the steps you repeat as the application changes.
+```bash
+umask 077
 
-| Action | When |
+# Each namespace has to exist before a Secret can be created in it.
+# Both manifests are tracked, and applying them again later is a no-op.
+kubectl apply -f k8s/base/00-namespace.yaml
+kubectl apply -f jenkins/namespace.yaml
+
+# Application: taskflow-db-credentials and taskflow-frontend-secret in devops-app
+cp k8s/examples/secret-backend-db.example.yaml k8s/secret-backend-db.yaml
+cp k8s/examples/secret-frontend.example.yaml   k8s/secret-frontend.yaml
+
+# Jenkins: jenkins-admin and jenkins-github-webhook in jenkins
+cp jenkins/examples/secret-jenkins-admin.example.yaml   jenkins/secret-jenkins-admin.yaml
+cp jenkins/examples/secret-github-webhook.example.yaml  jenkins/secret-github-webhook.yaml
+```
+
+Then edit each copy: drop the `-example` suffix from `metadata.name` and replace the placeholders. The database user and password are the RDS-managed master credentials in AWS Secrets Manager (`aws secretsmanager get-secret-value`, piped into the file rather than printed). The Frontend session key and the Jenkins admin password are locally generated random strings. The webhook secret is a random string you will also paste into the GitHub webhook in step 8.
+
+```bash
+kubectl apply --server-side -f k8s/secret-backend-db.yaml
+kubectl apply --server-side -f k8s/secret-frontend.yaml
+kubectl apply --server-side -f jenkins/secret-jenkins-admin.yaml
+kubectl apply --server-side -f jenkins/secret-github-webhook.yaml
+
+git check-ignore -v k8s/secret-*.yaml jenkins/secret-*.yaml
+```
+
+### 4. Deploy the application once
+
+`k8s/base/20-configmap.yaml` carries this environment's RDS host, S3 bucket and SNS topic. Update those three values from your own `terraform output` before the first apply. Then:
+
+```bash
+./scripts/bootstrap-app.sh --dry-run
+./scripts/bootstrap-app.sh
+```
+
+This applies `k8s/base` — namespace, ServiceAccounts, ConfigMap, the three Deployments, Services and the Ingress — and waits for the rollouts. It runs once per environment; after that, releases go through the CD pipeline and touch only `k8s/overlays/release`. The `devops-app` namespace must exist before Jenkins is installed, because the CD agent's Role lives in it.
+
+### 5. Install Jenkins from code
+
+```bash
+./scripts/install-jenkins.sh --dry-run
+./scripts/install-jenkins.sh
+./scripts/create-jobs.sh
+./scripts/verify-jenkins.sh
+```
+
+`install-jenkins.sh` creates the namespace, the StorageClass, the controller RBAC and the agent identities, checks that both Jenkins Secrets exist, downloads the pinned Helm chart, **verifies its SHA256 before installing it**, creates the release from that verified file, and applies the webhook Ingress. `create-jobs.sh` refuses to run unless both Jenkinsfiles are present in the remote branch the jobs point at, applies the job definitions, waits for the configuration reload and reads both jobs back from the controller. `verify-jenkins.sh` is read-only and exits non-zero if anything drifts from the repository.
+
+The controller image and all 14 plugins are pinned in `jenkins/values.yaml`. Everything else lives in `jenkins/jcasc/`, which Helm passes to the release file by file with `--set-file`: the security realm and authorization strategy, `numExecutors: 0`, the Kubernetes cloud and both agent Pod templates, the webhook credential reference, and the Job DSL job definitions. The two jobs, `ci-application` and `application-cd`, are created by Job DSL inside that same Configuration as Code reload — not through the UI.
+
+Jenkins home is on a PersistentVolumeClaim, and there is no backup or restore procedure for it. Recovery is configuration-first: reinstall from this repository and the controller, plugins, cloud, agent templates and both jobs come back exactly as they are defined here. Build history and archived artifacts do not — they live only on that volume.
+
+To reconcile an existing installation after changing anything under `jenkins/`:
+
+```bash
+./scripts/configure-jenkins.sh --dry-run
+./scripts/configure-jenkins.sh
+```
+
+### 6. Open the Jenkins UI
+
+```bash
+kubectl port-forward -n jenkins svc/jenkins 8080:8080
+# then browse to http://localhost:8080
+```
+
+The UI is deliberately not published and has no public route. It has no Ingress and no LoadBalancer of its own, and `jenkins.taskflow.plus` serves only the exact `/github-webhook/` path — nothing under it reaches the UI. Port-forward is the only way in, and it requires cluster access first. Log in with the credentials from the `jenkins-admin` Secret.
+
+### 7. DNS
+
+Both records are Route 53 aliases to load balancers that the AWS Load Balancer Controller created, so they are resolved at run time rather than from Terraform outputs. Neither script overwrites an existing record.
+
+```bash
+./scripts/configure-app-dns.sh apply          # taskflow.plus
+./scripts/check-webhook-cidrs.sh              # confirm the pinned GitHub ranges are current
+./scripts/configure-webhook-dns.sh apply      # jenkins.taskflow.plus
+```
+
+Both accept `status` and `delete` as well, and `--dry-run`.
+
+### 8. Register the GitHub webhook
+
+This is the one external integration that has to be created by hand, in the repository settings on GitHub. There is exactly one webhook:
+
+| Setting | Value |
 | --- | --- |
-| Build and push a new image version | Whenever application code changes |
-| Create or rotate the real Kubernetes Secrets | On a new environment, or when credentials change |
-| Apply the TaskFlow manifests | On every deployment |
+| Payload URL | `https://jenkins.taskflow.plus/github-webhook/` |
+| Content type | `application/json` |
+| Secret | the same value stored in the `jenkins-github-webhook` Secret |
+| SSL verification | enabled |
+| Events | push events only |
 
-### Order for a new environment
+No GitHub token is needed anywhere. Jenkins does not manage webhooks through the GitHub API, and both jobs check the repository out anonymously over HTTPS. Jenkins verifies every delivery with HMAC SHA-256 against the shared secret.
 
-```text
-Terraform infrastructure
-  -> kubeconfig
-    -> build and push images to ECR
-      -> AWS Load Balancer Controller
-        -> namespace, ServiceAccounts, ConfigMap, Secrets
-          -> TaskFlow Deployments, Services, Ingress
-            -> verify the application through the load balancer address
-```
+The jobs check out the branch configured in `jenkins/jcasc/jobs.yaml`, currently `jenkins-cicd`, and CI promotes to CD only from that branch.
 
-The SNS confirmation is independent of this chain and can be completed at any point after `terraform apply`.
+---
+
+## 🟣 CI Pipeline — `ci-application`
+
+Defined by `ci-Jenkinsfile` in the repository root, running on the `taskflow-ci` Agent Pod. Ten stages, and none of them deploys anything.
+
+| Stage | What it does | The build fails when |
+| --- | --- | --- |
+| Checkout | Checks out the commit and prints commit SHA, branch, build number and agent name | the checkout fails |
+| Validation | Installs the pinned tooling into the workspace, runs `scripts/validate-repository.py` | required files, Dockerfiles or Kustomize references are missing or broken |
+| Lint | `ruff check .` | any lint error |
+| Tests | pytest for all three services, JUnit XML published to Jenkins | any test fails — every service still runs and reports first |
+| Tag | Builds the run's unique tag and checks it does not already exist in ECR | the tag exists, or the registry cannot be queried |
+| Build | Rootless BuildKit builds one OCI image layout per service | a build fails, or BuildKit reports no digest |
+| Scan | Trivy full report, then two gates | **Gate A:** a HIGH or CRITICAL finding that has a fix. **Gate B:** any secret found in an image |
+| Push | ECR token, skopeo login, `skopeo copy --preserve-digests` | any push fails |
+| Verify Digest | Reads each digest back from ECR and compares it with the digest BuildKit reported | the built and stored digests differ |
+| Publish Metadata | Writes `image-manifest.json` with commit, build, tag and digests | — |
+
+`post` always archives `image-manifest.json` and the Trivy JSON reports (fingerprinted), discards the registry authentication material, and wipes the workspace — on a red build too.
+
+**Details worth knowing:**
+
+* **Immutable tags.** One tag per run, shared by all three services: `git-<short12-sha>-b<BUILD_NUMBER>-<RUN_ID>`. `latest` is never produced. The ECR repositories are set to immutable tags, and the Tag stage refuses to continue if the tag already exists, so a long build cannot die on a duplicate push at the end.
+* **Build once.** Each service is built exactly once, into an OCI layout in the workspace. Trivy scans that directory, skopeo copies that same directory to ECR with `--preserve-digests`, and the digest is then read back from the registry. Nothing is rebuilt or re-encoded between those steps.
+* **No Docker socket.** Images are built by rootless BuildKit inside the agent Pod, over a socket on an `emptyDir`. There is no `/var/run/docker.sock` mount, no `hostPath` and no privileged Pod anywhere in this setup.
+* **No deploy identity.** The CI agent has no Role, no RoleBinding and no mounted ServiceAccount token, and the Jenkinsfile carries no kubeconfig. Registry credentials are short-lived: the AWS CLI container exchanges Pod Identity credentials for an ECR token on a memory-backed volume outside the workspace, skopeo turns it into an auth file, and both are deleted as soon as the push is done.
+
+---
+
+## 🟣 CD Pipeline — `application-cd`
+
+Defined by `cd-Jenkinsfile` in the repository root, running on the `taskflow-cd` Agent Pod. It never builds an image and never changes application code.
+
+| Parameter | Meaning |
+| --- | --- |
+| `IMAGE_TAG` | The tag CI produced. Empty, malformed or `latest` is rejected |
+| `CI_BUILD_NUMBER` | The `ci-application` build that produced that tag |
+| `ENVIRONMENT` | Target environment. `dev` is the only value, and it maps to namespace `devops-app` |
+| `RELEASE_NOTE` | Optional free text, sanitised and recorded in the rollout history |
+
+Fourteen stages, in four groups:
+
+| Group | Stages | What it establishes |
+| --- | --- | --- |
+| Prepare | Checkout, Validate Parameters, Authenticate, Fetch CI Metadata | manifests checked out; the tag is well formed and not `latest`; the namespace comes from an allow list; the in-cluster identity already has the rights it will need; `image-manifest.json` is copied from that specific CI build |
+| Verify | Verify Provenance, Verify Registry | the manifest really describes that job, build, tag and registry; every digest still exists in ECR and still carries that tag. Repository names come from the pipeline, never from the artifact |
+| Plan | Render Release, Validate Manifests, Release Plan, Capture Previous State | the release overlay is pinned to those digests; `kubectl apply -k --dry-run=server` over the release scope; the full plan is printed; the currently running digests and annotations are recorded first |
+| Release | Deploy, Rollout, Verify Release, Smoke Test | apply, wait for every rollout, compare running Pod digests and annotations against the verified release, then check the application over HTTPS |
+
+**Release Plan.** Every CD build prints who triggered the deployment, the promoted version, the target cluster and the target namespace as part of the Release Plan, so each release states its own origin and destination before anything is applied.
+
+**Why Kustomize instead of Helm.** The release overlay contains only the three Deployments. That is what makes the narrow CD permissions possible: the agent needs `patch` on three named Deployments and nothing else — no create, no delete, no Secrets access. A Helm release would also need to create and update its own release Secrets in `devops-app`, which means a wider grant for something the deployment itself does not need. The bootstrap set (namespace, ServiceAccounts, ConfigMap, Services, Ingress) is applied once by an operator and is deliberately outside what CD can touch.
+
+**Verification.** The rollout finishing is not treated as proof. The stage first reads the Deployments and Pods, the Services and the Ingress back from the namespace, then checks every running Pod and fails unless its image is exactly `<registry>/<repository>@<digest>` from the CI manifest and its provenance annotations match this release. Only then does the smoke test run, against `https://taskflow.plus` — the application's own public endpoint, with TLS verification on and redirects not followed — checking `/ready` and `/login`, with retries because ALB target registration lags a finished rollout.
+
+`disableConcurrentBuilds()` is set on both pipelines, so two releases cannot race on the same Deployments.
+
+The digests and annotations checked into `k8s/overlays/release/` are only a repository baseline for the bootstrap state; every CD run rewrites the overlay's images and release metadata in its own ephemeral workspace before deploying, and nothing is committed back.
+
+### Rollback and failure handling
+
+| Where it fails | What happens to the environment |
+| --- | --- |
+| Any CI gate | Nothing is pushed for deployment and `application-cd` is never started |
+| CD, before the apply | Unchanged. The build reports that no rollback is needed |
+| CD, at or after the apply | Diagnostics are collected first, then the release is rolled back automatically |
+
+On failure after the apply, the pipeline collects Deployments, events, and descriptions and logs of unhealthy Pods — before changing anything back, because a rollback overwrites the state those describe. It then compares the declared Pod templates and every running Pod against the state recorded in the Plan group. If nothing drifted, no rollback happens. Otherwise it runs `kubectl rollout undo` on the drifted Deployments and verifies the result. If undo fails or does not restore the recorded state, it reapplies the recorded digests and their annotations directly from `previous-images.json`, which is archived with the build. Either way the Jenkins build stays **FAILED** — the release did not deploy.
+
+**Showing an expected failure.** `backend/tests/test_ci_failure_gate.py` is skipped unless `TASKFLOW_FORCE_TEST_FAILURE=1` is set. Arming it makes the Tests stage fail, which turns the build red, publishes the JUnit report that explains why, and stops the pipeline before anything is built or pushed — so no image is produced and CD is not triggered.
 
 ---
 
 ## 🟣 Security
 
-This section explains the security implications of running TaskFlow on Kubernetes: how permissions are separated, how secrets are handled, how the network is restricted, and what the containers and images look like from a security perspective.
+### RBAC and AWS identity
 
-### Separation of permissions
+No component of this project has `cluster-admin`, and there is no ClusterRole or ClusterRoleBinding anywhere in `jenkins/rbac/`.
 
-Each service has its own ServiceAccount, and AWS access is scoped per service rather than shared:
-
-| Service | ServiceAccount | AWS access |
+| Identity | Kubernetes permissions | AWS permissions |
 | --- | --- | --- |
-| Frontend | `taskflow-frontend` | none — no application IAM role, no Pod Identity association |
-| Backend | `taskflow-backend` | `s3:PutObject`, `s3:GetObject`, `s3:AbortMultipartUpload`, scoped to the `uploads/` prefix of one bucket |
-| Worker | `taskflow-worker` | `sns:Publish`, scoped to one SNS topic |
+| `jenkins-controller` | Two Roles in `jenkins` only: Agent Pod lifecycle (`get,list,watch,create,delete` on pods, `pods/exec`, `pods/log`, `events`) and read-only ConfigMaps for the config reload | none |
+| `jenkins-ci-agent` | **none** — no Role, no RoleBinding, `automountServiceAccountToken: false` | ECR push and digest read-back on the three TaskFlow repositories |
+| `jenkins-cd-agent` | One Role in `devops-app` | `ecr:DescribeImages` on the three repositories, and nothing else |
+| `taskflow-backend` | none | S3 read/write, limited to the uploads prefix of one bucket |
+| `taskflow-worker` | none | `sns:Publish` on one topic |
+| `taskflow-frontend` | none | none |
 
-These roles do not overlap, and none of them is broad. If one workload were compromised, a shared or broad role would let the attacker reach AWS resources that workload never needed — for example, a compromised Frontend reaching S3, or a compromised Backend publishing to SNS. Keeping the roles separate and narrow limits what a single compromised Pod can actually do.
+The CD Role's only write permission is `patch` on the Deployments named `backend`, `frontend` and `worker`; it also has `get` on those Deployments. Everything else it holds is read-only and exists for rollout, verification and diagnostics: `list`/`watch` on Deployments, `list` on ReplicaSets, Services, Ingresses and events, `get`/`list` on Pods, and `get` on `pods/log`. Those read-only rules are namespace-wide rather than restricted by resource name, and that is a Kubernetes limitation rather than a choice — `resourceNames` cannot restrict collection verbs like `list` and `watch`. There is still no `create`, no `delete` and no access to Secrets.
 
-TaskFlow uses EKS Pod Identity rather than IAM Roles for Service Accounts (IRSA) to grant these permissions. The ServiceAccount is mapped to an IAM role through an EKS Pod Identity association, and the Pod obtains temporary role credentials through the EKS Pod Identity Agent. Pod Identity was chosen because these workload roles do not require IRSA-style OIDC federation or OIDC-based trust policies. Instead, they use the reusable pods.eks.amazonaws.com service principal, which fits this project's single-cluster EKS setup.
+AWS access uses **EKS Pod Identity**, so no static AWS credentials exist in Git, in Jenkins or in a Jenkinsfile. Each role's trust policy is scoped by the session tags Pod Identity sets automatically — namespace, ServiceAccount and cluster ARN — so the CD agent cannot assume the CI role and gain push rights even though both run in the same namespace on the same node. The one action that cannot be scoped to a repository is `ecr:GetAuthorizationToken`, which ECR defines only at registry level; the token it returns opens nothing by itself, because every following call is authorised again against the repository-scoped statement.
 
-Pod Identity has trade-offs worth noting rather than treating it as strictly better or worse than IRSA. It depends on the EKS Pod Identity Agent running as a DaemonSet on every node. It is tightly coupled to Amazon EKS and only supports Pods running on Linux Amazon EC2 worker nodes, while IRSA uses OIDC-based federation and does not depend on the Pod Identity Agent. Pod Identity associations are also eventually consistent, with potential delays of several seconds after being created or changed, so they should not be relied on inside latency-sensitive request paths.
+### Secrets and credentials
 
-### RBAC
+Four Secrets exist, and none of their values is in Git: `jenkins-admin` and `jenkins-github-webhook` in the `jenkins` namespace, `taskflow-db-credentials` and `taskflow-frontend-secret` in `devops-app`. The repository tracks only `*.example.yaml` templates with placeholders, and `.gitignore` blocks the real paths. Jenkins resolves both of its secrets from files the kubelet projects out of Kubernetes Secrets, with `CASC_STRICT_SECRET_RESOLUTION=true` so an unresolved reference fails the config load instead of silently becoming empty.
 
-TaskFlow's workloads do not call the Kubernetes API, so no application Role, RoleBinding, ClusterRole, or ClusterRoleBinding is granted to any of the three ServiceAccounts, and none of them is granted `cluster-admin`. `automountServiceAccountToken: false` on each ServiceAccount prevents the standard Kubernetes API token from being mounted, so no workload can authenticate to the Kubernetes API server as itself. Backend and Worker do still receive a separate, EKS-injected identity token, used only to retrieve temporary AWS credentials through EKS Pod Identity — a different mechanism, unrelated to Kubernetes API access. This is an intentional minimal-permission design — the application does not need Kubernetes API access, so none is provided — rather than an omitted control.
+Secret material is kept out of console logs by construction: the registry-credential steps in CI start with a shebang, which stops Jenkins from running them under shell tracing, the ECR token is passed on stdin rather than as a command-line argument, and the install scripts inspect Secrets by key name and value length only. Credential masking itself was verified with a disposable synthetic value created for that check alone — no real Jenkins admin, webhook, AWS or ECR credential was used as test data.
 
-### Secrets management
+| Credential | How it is rotated | How it is revoked |
+| --- | --- | --- |
+| Jenkins admin | Replace the keys in the `jenkins-admin` Secret, then run `configure-jenkins.sh`; the reload re-seeds the user from the Secret | Same operation — the previous password stops working once the controller reloads |
+| GitHub webhook secret | Replace the value in `jenkins-github-webhook` and in the GitHub webhook, then run `configure-jenkins.sh` | Deliveries signed with the old secret fail signature verification as soon as both sides are updated |
+| ECR authorization token | Short-lived and obtained only for the Push stage; it lives on a memory-backed volume and the local copy is deleted right after the push and again in `post` | Deleting the local copy is not server-side revocation of a token already issued. To cut access off, revoke or remove the underlying Pod Identity association or its IAM permissions, so no new credentials or tokens can be obtained |
+| AWS access (Pod Identity) | Change the policy in `terraform/jenkins_iam.tf` and apply | Detach the policy or delete the Pod Identity association; Pods lose access at the next credential refresh |
+| CD ServiceAccount token | Projected with `expirationSeconds: 3600` and refreshed by the kubelet | Delete the RoleBinding to remove the grant, or the ServiceAccount to remove the identity |
 
-Sensitive values — the database credentials and the Frontend session key — are stored as Kubernetes Secrets in the `devops-app` namespace, not as plain environment values in the manifests. The real Secret files are excluded from Git; only placeholder example files are tracked. The database credentials originate from the RDS-managed secret in AWS Secrets Manager and are copied into the Kubernetes Secret through the workflow described above — Secrets Manager is the source of that value, not something the running application queries directly. The Frontend session key is generated locally and stored the same way.
+### Agents and containers
 
-On Kubernetes 1.35, Amazon EKS applies default envelope encryption to all Kubernetes API data, including Secrets, using an AWS-owned KMS key, so Secret values are encrypted at rest without any extra configuration. No customer-managed KMS key is configured for this cluster, which would be an additional control on top of the default.
+No build runs on the controller — it has zero executors. Every build runs on a Pod that exists only for that build, with a workspace on an `emptyDir` and `cleanWs()` in `post`. Every container in both templates declares CPU and memory requests and limits.
 
-### Network security
+Both Pods run as UID/GID 1000 with `runAsNonRoot: true`. Every container uses the same hardened defaults — `seccompProfile: RuntimeDefault`, `allowPrivilegeEscalation: false`, all Linux capabilities dropped, and a read-only root filesystem wherever the tool can work with one — with exactly one documented exception, the BuildKit container described below. There is no Docker socket mount and no `hostPath` volume anywhere.
 
-The Application Load Balancer is the only public entry point, and it only reaches the Frontend. The Backend and Worker Services are `ClusterIP`, so they are reachable only from inside the cluster, never from the internet. RDS is private, and its Security Group only accepts PostgreSQL traffic on port 5432 from the EKS Worker Node Security Group. Amazon S3 blocks all public access, and traffic to it from the cluster's private subnets travels through an S3 VPC Gateway Endpoint rather than the public internet.
+The controller is hardened the same way: UID/GID 1000, `runAsNonRoot`, `allowPrivilegeEscalation: false`, a read-only root filesystem, all capabilities dropped and `seccompProfile: RuntimeDefault`.
 
-The intended internal application path is Frontend → Backend → Worker, with the Backend also connecting to RDS. Because no Kubernetes NetworkPolicies are applied, these intended paths are not additionally enforced at the pod network-policy layer — this remains a security hardening opportunity. Separately, the EKS API server's public endpoint is restricted to a single configured administrator IP address.
+**The BuildKit exception, stated plainly.** Rootless BuildKit still needs three things the other containers do not, and they are set on that one container only:
 
-### Container security
+* `allowPrivilegeEscalation: true` and capabilities `SETUID` + `SETGID`, which `newuidmap`/`newgidmap` need to set up the user namespace
+* `seccompProfile: Unconfined`, because the default profile blocks the syscalls that user namespace requires
 
-All three workloads use the same restrictive container security settings:
+Everything else stays: all capabilities are dropped except the explicitly required `SETUID` and `SETGID` on this container, and it still runs non-root with a read-only root filesystem. `buildkitd` runs with `--oci-worker-no-process-sandbox` rather than the broader `procMount: Unmasked`. This is the measured minimum for building images without a privileged Pod, and it is why the node's Docker socket is not mounted anywhere. The `jenkins` namespace does not enforce Pod Security Admission labels for this reason, which is noted in `jenkins/namespace.yaml`.
 
-| | Frontend | Backend | Worker |
-| --- | --- | --- | --- |
-| Non-root, fixed UID/GID | 1000 / 1000 | 1000 / 1000 | 1000 / 1000 |
-| `runAsNonRoot` | true | true | true |
-| `allowPrivilegeEscalation` | false | false | false |
-| `readOnlyRootFilesystem` | true | true | true |
-| Linux capabilities | all dropped | all dropped | all dropped |
-| seccomp profile | RuntimeDefault | RuntimeDefault | RuntimeDefault |
-| CPU/memory requests and limits | set | set | set |
+### Network and exposure
 
-Because the root filesystem is read-only, each container gets a small writable `emptyDir` volume where it actually needs to write temporary files.
+| Endpoint | Exposure |
+| --- | --- |
+| `https://taskflow.plus` | Public. Internet-facing ALB, ACM certificate, HTTP redirected to HTTPS, TLS 1.2/1.3 policy set explicitly. Reaches the Frontend only |
+| `https://jenkins.taskflow.plus/github-webhook/` | Public, but only that one path (`pathType: Exact`) on its own ALB, restricted to GitHub's published hook CIDR ranges, IPv4-only so no source bypasses the filter |
+| Jenkins UI | No public route. No Ingress and no LoadBalancer of its own, and the webhook host serves only that one path — `kubectl port-forward` only |
+| Backend, Worker, RDS | Internal only. ClusterIP Services; RDS is private and accepts 5432 from the node security group |
 
-### Image security
+The shared secret is the primary control on the webhook: Jenkins checks the `X-Hub-Signature-256` HMAC on every delivery, and the CIDR restriction is a second, independent layer. `check-webhook-cidrs.sh` compares the pinned ranges against the list GitHub publishes, because those ranges change over time. Issuing a public certificate puts `jenkins.taskflow.plus` in Certificate Transparency logs, so the name is discoverable — which is exactly why the path restriction, source filter and signature check carry the protection instead of the name being unknown.
 
-Each service is built from its own Dockerfile, not a public application image, and pushed to its own private Amazon ECR repository. Tags are fixed version numbers, `latest` is never used, and the repositories are configured with immutable tags, so an existing tag cannot be silently replaced. ECR scans every image on push.
+Required communication directions: GitHub to the webhook ALB (inbound); agents to GitHub over HTTPS for checkout and to Amazon ECR through the NAT gateway (outbound); the controller and the CD agent to the Kubernetes API in-cluster; the kubelet to ECR to pull application images.
 
-### Ingress security
+**NetworkPolicy.** No Kubernetes NetworkPolicy objects are defined here, and that is deliberate. The Amazon VPC CNI add-on is installed with its default configuration, in which the network policy agent runs with enforcement turned off (`--enable-network-policy=false`). Shipping NetworkPolicy manifests against a cluster that does not enforce them would suggest an isolation boundary that is not actually there, so this README does not claim east-west Pod isolation. The boundaries that do exist are service exposure (only the Frontend and one webhook path are reachable from outside), Kubernetes RBAC, AWS IAM scoped per ServiceAccount, node-level scheduling separation, and security groups around RDS. Enabling enforcement in the add-on and then adding policies for both namespaces is the next hardening step.
 
-The internet-facing ALB exposes only the Frontend over HTTP. TLS/HTTPS is not currently configured, which is a network-level limitation separate from the application's own login authentication — reaching the Frontend does not require a TaskFlow account, but using the application does. The Backend and Worker remain internal Kubernetes services, and RDS remains private inside the VPC. Nothing about this Ingress configuration exposes the Backend, the Worker, or the database directly.
+### Images
+
+The controller image is pinned to `2.568.2-jdk21` — the chart cannot pin a digest, which is noted in `values.yaml`. Every agent container image is pinned by digest, so a repointed tag cannot change what a build runs on. Application images are built from pinned base image digests, run as a non-root user, and go to private ECR repositories with immutable tags and scan-on-push enabled. In CI, Trivy scans the exact artifact that is about to be pushed and gates on fixable HIGH/CRITICAL findings and on any secret found in an image; `.trivyignore` is intentionally empty, so nothing is currently exempt. Deployments reference images by digest, never by tag and never by `latest`.
+
+The platform images were scanned as well, not only the application ones: the Jenkins controller, the JCasC reload sidecar the chart supplies, and every image in the two agent templates. The skopeo image is Fedora-based, which Trivy reports as an unsupported OS family rather than as a clean result, so it was scanned with Grype instead to get package matching that actually means something. These scans are a point-in-time review rather than a gate, and the findings they returned were assessed on their own — none of these images is claimed to be free of vulnerabilities.
 
 ---
 
-## 🟣 Architecture Decisions and Trade-offs
+## 🟣 Design Decisions and Trade-offs
 
-Several design points in this project involved a deliberate trade-off rather than a single obviously correct answer; the table below summarizes the significant ones.
-
-| Decision | Why we chose it | Trade-off |
-| --- | --- | --- |
-| Amazon EKS instead of a local cluster (kind/k3d) | Real AWS-managed Kubernetes integration with IAM, the ALB, VPC networking, and EKS Pod Identity | Higher cost and more operational complexity than a local cluster |
-| Plain Kubernetes manifests instead of Helm for the application | Transparent and easy to understand and reproduce for this single environment | Less convenient than Helm/Kustomize for many environments or extensive customization |
-| Managed Amazon RDS outside Kubernetes | Managed database lifecycle and storage, separating persistent data from ephemeral Kubernetes workloads, in a production-like AWS architecture | Additional AWS dependency and cost |
-| 3 × t3.small Worker Nodes | Headroom for node maintenance and failures, and realistic multi-node behavior beyond the minimum capacity the workloads need | Additional EC2 cost |
-| One NAT Gateway for the two private-app AZs | Lower cost for a development environment | Not AZ-redundant; private workload egress depends on a single NAT Gateway |
-| No separate Nginx Pod in the Kubernetes runtime | Fewer moving parts — the ALB already provides the external routing layer | No separate Nginx proxy layer for Nginx-specific or custom proxy features |
-| Kubernetes Secrets with a documented local workflow, instead of a runtime External Secrets integration | Simple and transparent, with no extra controller or operator to run | Rotation and synchronization are manual, and secret material also exists in the local, gitignored Secret manifests |
-| Local Terraform state instead of a remote backend | Simple setup for the current single-operator development workflow, with no remote-backend bootstrap required | Weaker collaboration and recovery model; local state must be carefully protected |
+| Decision | Why, and what it costs |
+| --- | --- |
+| Jenkins in the same EKS cluster, in its own namespace | One control plane to run and pay for. Separation comes from namespace, node group, ServiceAccounts and RBAC instead of from a second cluster. The trade-off is that a cluster-level compromise would reach both sides |
+| Dedicated Jenkins node group with a taint | Predictable capacity for a workload whose Pod count changes constantly, and build work never lands on application nodes. Costs one extra instance, and it is scheduling isolation, not a security boundary |
+| Official Jenkins Helm chart, pinned and checksum-verified | A maintained, well-understood installation path, with the exact artifact verified before it reaches the cluster. Chart defaults have to be overridden deliberately, which is why `values.yaml` is explicit |
+| Kustomize for the application release, not Helm | The release scope is only the three Deployments, which is what allows CD's very narrow RBAC. Helm would need release Secrets in the application namespace. Costs Helm's templating and release history |
+| Rootless BuildKit instead of a Docker socket | No node socket, no privileged Pod, no `hostPath`. The cost is one documented securityContext exception on the BuildKit container |
+| EKS Pod Identity instead of static AWS keys | No AWS credential is stored in Git, in Jenkins or in a Jenkinsfile, and trust is scoped per ServiceAccount. Ties the design to EKS and depends on the Pod Identity Agent |
+| Build once, scan that artifact, preserve digests, deploy that digest | What runs is provably what was tested and scanned. Costs extra pipeline steps: a collision guard, a digest read-back and a provenance check |
+| Only the webhook path is public; UI stays private | The smallest possible public surface for a CI/CD system. Operators need cluster access and a port-forward to see anything |
+| Configuration-first recovery, no Jenkins home backup | Everything that defines Jenkins is in this repository and can be reinstalled in minutes. Build history and archived artifacts are not recoverable if the volume is lost |
+| No ECR lifecycle policy | Every image built stays available for rollback and inspection. Storage grows over time and would need a policy in a longer-lived environment |
 
 ---
 
-## 🟣 Cleanup / Teardown
+## 🟣 Cleanup
 
-This section documents how to tear down the TaskFlow environment once it is no longer needed. Nothing here runs automatically or as part of normal operation — it is a deliberate, one-time sequence you follow when you want to remove the deployed infrastructure.
-
-### Before You Start
-
-This project's Terraform configuration is intentionally optimized for a disposable development environment, not for safe long-term data retention:
-
-* Amazon RDS has `skip_final_snapshot = true`, `deletion_protection = false`, and `backup_retention_period = 0`. No final snapshot is taken when the instance is destroyed, and there is no automated backup to fall back on afterward — any data still in the database at that point cannot be considered preserved.
-* The S3 uploads bucket has `force_destroy = true` and no versioning configured, so `terraform destroy` removes the bucket and every object in it unconditionally.
-* The ECR repositories have `force_delete = true`, so any pushed container images are removed along with the repositories.
-
-If you need to keep anything, back it up before continuing — for example with `pg_dump` for the database or `aws s3 sync` for the uploads bucket. This section does not cover backup procedures in detail; decide what you need to keep before running any of the commands below.
-
-### Step 1 — Delete the Ingress and Verify AWS Load Balancer Controller Cleanup
-
-The AWS Load Balancer Controller created the ALB and its supporting AWS resources in response to the Kubernetes `Ingress` object, not through Terraform. Because of that, the Ingress has to be deleted first, while the Controller and the EKS cluster are still running — it is the only thing that can clean those AWS resources up.
+> **This removes data permanently.** RDS is configured with `skip_final_snapshot`, the S3 bucket with `force_destroy`, and the ECR repositories with `force_delete`. Jenkins home is on a StorageClass that reclaims on delete, so removing the release destroys the volume, its build history and its archived artifacts. Back up anything you need before starting.
 
 ```bash
+# 1. DNS aliases first, while the load balancers still exist
+./scripts/configure-webhook-dns.sh delete
+./scripts/configure-app-dns.sh delete
+
+# 2. Ingress objects, so the controller can clean up its ALBs, target groups
+#    and security groups while it and the cluster are still running
+kubectl delete ingress jenkins-webhook -n jenkins
 kubectl delete ingress frontend -n devops-app
-```
 
-Deleting the Ingress triggers Controller reconciliation, not an instant cleanup. Wait for it to finish, then verify every AWS Load Balancer Controller-managed resource is actually gone before moving on:
-
-```bash
-kubectl get ingress -n devops-app
-kubectl get targetgroupbindings.elbv2.k8s.aws -n devops-app
-
+# 3. Confirm nothing controller-managed is left before going further
 aws resourcegroupstaggingapi get-resources --region eu-north-1 \
   --resource-type-filters elasticloadbalancing:loadbalancer elasticloadbalancing:targetgroup \
   --tag-filters Key=elbv2.k8s.aws/cluster,Values=taskflow-dev-eks \
   --query "ResourceTagMappingList[].ResourceARN" --output table
 
-aws ec2 describe-security-groups --region eu-north-1 \
-  --filters "Name=tag:elbv2.k8s.aws/cluster,Values=taskflow-dev-eks" \
-  --query "SecurityGroups[].{GroupId:GroupId,GroupName:GroupName,Description:Description}" --output table
-```
+# 4. Jenkins: release, PVC, RBAC, agent identities and the namespace
+./scripts/uninstall-jenkins.sh --purge-all
 
-Expect the Ingress and the TargetGroupBinding to be gone, no load balancer or target group tagged for this cluster, and no security group tagged for it either. The tag-based query scopes both checks to this EKS cluster's own resources, not the whole account or region. The AWS Load Balancer Controller manages two separate security groups for an Ingress like this one — a frontend security group for the ALB itself, and a shared backend security group that lets the ALB reach the Pods — and they are not guaranteed to disappear at exactly the same moment. Re-run the checks until both return nothing.
-
-**Stop and investigate before continuing** if any load balancer, target group, security group, or TargetGroupBinding is still present after a reasonable wait. Do not proceed to uninstalling the Controller or to `terraform destroy` while any AWS Load Balancer Controller-managed resource still exists — Terraform has no knowledge of these resources and cannot clean them up.
-
-### Step 2 — Remove the Application Namespace
-
-Once the checks above confirm the AWS-side cleanup is complete, remove the application's Kubernetes resources:
-
-```bash
+# 5. The application namespace
 kubectl delete namespace devops-app
-```
 
-This removes everything namespaced under `devops-app` in one step — the Deployments, Services, ConfigMap, Kubernetes Secrets, and ServiceAccounts. It is a deliberate cleanup step done here, before the Controller and the cluster itself are removed, rather than something left for `terraform destroy` to clean up as a side effect.
-
-```bash
-kubectl get namespace devops-app
-```
-
-Expect `Error from server (NotFound): namespaces "devops-app" not found`.
-
-### Step 3 — Uninstall the AWS Load Balancer Controller
-
-The Controller was installed manually with Helm (see Required Manual Actions above), so it is removed the same way — only after the Ingress and its AWS resources are confirmed gone and the application namespace has been removed:
-
-```bash
+# 6. The load balancer controller
 helm uninstall aws-load-balancer-controller -n kube-system
-```
 
-```bash
-helm status aws-load-balancer-controller -n kube-system
-```
-
-Expect `Error: release: not found` — the Controller's own Helm release is gone. This checks that one release specifically; it does not require, or claim, that `kube-system` has no other Helm releases.
-
-### Step 4 — Destroy the Terraform Infrastructure
-
-With the Kubernetes-side and Controller-side resources gone, the remaining AWS infrastructure for TaskFlow is Terraform-managed. Local Terraform state must not be deleted or lost before this step completes — Terraform uses it to know what currently exists and what to remove.
-
-```bash
+# 7. Everything Terraform owns
 terraform -chdir=terraform destroy
 ```
 
-Terraform works out its own dependency order for everything under its management — the EKS cluster and Managed Node Group, the IAM roles and Pod Identity associations, RDS, the S3 bucket, the SNS topic and its email subscription, the ECR repositories, and the surrounding network resources (NAT Gateway, security groups, subnets, VPC). No manual ordering is required, and no separate step is needed to remove the RDS-managed master password secret in AWS Secrets Manager — RDS deletes it together with the DB instance.
+Run `uninstall-jenkins.sh` with no flags first: it destroys nothing and reports exactly what each mode would remove. `--purge-data` removes the release and the volume but leaves the namespace, RBAC and Secrets in place.
 
-**A note on scope.** `terraform destroy` only removes resources that belong to this repository's current Terraform configuration and state. Any AWS resource created manually, or by an earlier iteration of this project, outside that state is unaffected by this command and needs to be reviewed separately.
+Step 3 is worth repeating until it returns nothing. Those AWS resources were created by the load balancer controller in response to the Ingress objects, not by Terraform, so `terraform destroy` has no knowledge of them and cannot clean them up.
 
-### Step 5 — Post-Destroy Verification
-
-Confirm the resources that would otherwise keep incurring cost are actually gone:
-
-```bash
-aws eks describe-cluster --name taskflow-dev-eks --region eu-north-1
-
-aws rds describe-db-instances --db-instance-identifier taskflow-dev-rds-postgres --region eu-north-1
-
-aws ec2 describe-nat-gateways --region eu-north-1 \
-  --filter "Name=tag:Name,Values=taskflow-dev-nat-gateway" \
-  --query "NatGateways[].State"
-
-UPLOADS_BUCKET="taskflow-dev-uploads-$(aws sts get-caller-identity --query Account --output text)"
-aws s3api head-bucket --bucket "$UPLOADS_BUCKET"
-
-aws ecr describe-repositories --region eu-north-1 \
-  --query "repositories[?starts_with(repositoryName, 'taskflow-dev-')].repositoryName" --output table
-
-aws resourcegroupstaggingapi get-resources --region eu-north-1 \
-  --resource-type-filters elasticloadbalancing:loadbalancer elasticloadbalancing:targetgroup ec2:security-group \
-  --tag-filters Key=elbv2.k8s.aws/cluster,Values=taskflow-dev-eks \
-  --query "ResourceTagMappingList[].ResourceARN" --output table
-```
-
-These commands don't all signal "gone" the same way, so check what each result actually contains rather than only whether the command succeeded:
-
-* EKS cluster and RDS instance: describing a deleted identifier fails outright — expect `ResourceNotFoundException` / `DBInstanceNotFound`.
-* NAT Gateway: `describe-nat-gateways` succeeds either way — expect an empty result, or an entry whose state is `deleted`.
-* S3 bucket: expect `404 Not Found`.
-* ECR repositories: expect an empty table — if `taskflow-dev-frontend`, `taskflow-dev-backend`, or `taskflow-dev-worker` is still listed, that repository wasn't removed.
-* Final AWS Load Balancer Controller safety net: expect no results. This repeats the ALB/Target Group/Security Group check from Step 1 after the full teardown, in case anything Controller-managed outlived the Helm uninstall.
-
-If any result still shows a live TaskFlow resource, investigate before considering teardown complete.
-
-### Step 6 — Local Cleanup
-
-Once the infrastructure teardown above is confirmed:
-
-```bash
-rm k8s/secret-backend-db.yaml k8s/secret-frontend.yaml
-```
-
-These files held real, now-unused database credentials and the Frontend session key.
-
-You can also remove the now-stale kubeconfig context. Do not delete `terraform/terraform.tfstate` (or its `.backup`) before `terraform destroy` has completed successfully — Terraform needs it to find what to remove. Once destroy is confirmed complete, the now-empty state file can be left in place, archived, or removed; that choice does not affect anything at that point. `terraform/terraform.tfvars` is not part of this cleanup — it is local input for a future redeploy, and whether to keep it is up to you.
+The Route 53 hosted zone and the domain registration are read by Terraform as data sources and are never owned by it, so they survive `destroy`. The ACM certificates and their validation records are Terraform-managed and are removed with everything else. Locally, delete the real Secret manifests once teardown is confirmed.
