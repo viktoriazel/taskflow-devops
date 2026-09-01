@@ -11,6 +11,30 @@ alertmanager:
   ingress:
     enabled: false
 
+  # Named explicitly: the generated default is derived from the release name,
+  # and the Pod Identity association is bound to this exact name.
+  serviceAccount:
+    create: true
+    name: alertmanager
+
+  config:
+    route:
+      group_by: [namespace, alertname]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: sns
+      # Clears the chart's default Watchdog route, whose receiver is not defined here.
+      routes: []
+    receivers:
+      - name: sns
+        # No access key: credentials come from the Pod Identity association.
+        sns_configs:
+          - topic_arn: arn:aws:sns:eu-north-1:034869165452:taskflow-dev-alerts
+            sigv4:
+              region: eu-north-1
+            send_resolved: true
+
   alertmanagerSpec:
     nodeSelector:
       workload: jenkins
