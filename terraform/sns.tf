@@ -27,3 +27,26 @@ resource "aws_sns_topic_subscription" "email" {
   protocol  = "email"
   endpoint  = var.sns_notification_email
 }
+
+# -----------------------------------------------------------------------------
+# SNS - Alert Notifications
+# -----------------------------------------------------------------------------
+
+# Alerts use a separate topic from application notifications.
+#trivy:ignore:AWS-0136
+resource "aws_sns_topic" "alerts" {
+  name              = "${var.project_name}-${var.environment}-alerts"
+  kms_master_key_id = "alias/aws/sns"
+
+  tags = merge(local.common_tags, {
+    Name    = "${var.project_name}-${var.environment}-alerts"
+    Purpose = "alerts"
+  })
+}
+
+# Email subscriptions require manual confirmation.
+resource "aws_sns_topic_subscription" "alerts_email" {
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.sns_notification_email
+}
