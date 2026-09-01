@@ -1,0 +1,216 @@
+# Helm values for kube-prometheus-stack. Chart version and checksum: observability/chart.env.
+
+# Alert rules are managed as code in observability/rules/.
+defaultRules:
+  create: false
+
+alertmanager:
+  enabled: true
+
+  # No component of this stack is published; access is by kubectl port-forward.
+  ingress:
+    enabled: false
+
+  alertmanagerSpec:
+    nodeSelector:
+      workload: jenkins
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: jenkins
+        effect: NoSchedule
+
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+grafana:
+  enabled: true
+
+  ingress:
+    enabled: false
+
+  # Dashboards and datasources are provisioned from code; persistent Grafana storage is not required.
+  persistence:
+    enabled: false
+
+  sidecar:
+    dashboards:
+      enabled: true
+    datasources:
+      enabled: true
+    resources:
+      requests:
+        cpu: 5m
+        memory: 48Mi
+      limits:
+        cpu: 50m
+        memory: 96Mi
+
+  # Bundled dashboards cover components this cluster does not scrape.
+  defaultDashboardsEnabled: false
+
+  nodeSelector:
+    workload: jenkins
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: jenkins
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 30m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# Managed EKS exposes no endpoint for these. kube-proxy stays enabled: this
+# cluster binds its metrics to 0.0.0.0:10249.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+kube-state-metrics:
+  nodeSelector:
+    workload: jenkins
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: jenkins
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 15m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# Runs on every node; the toleration is what reaches the tainted platform node.
+prometheus-node-exporter:
+  tolerations:
+    - effect: NoSchedule
+      operator: Exists
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+prometheusOperator:
+  nodeSelector:
+    workload: jenkins
+  tolerations:
+    - key: workload
+      operator: Equal
+      value: jenkins
+      effect: NoSchedule
+
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Applies to the config-reloader sidecar of both Prometheus and Alertmanager.
+  prometheusConfigReloader:
+    resources:
+      requests:
+        cpu: 5m
+        memory: 32Mi
+      limits:
+        cpu: 50m
+        memory: 64Mi
+
+  admissionWebhooks:
+    patch:
+      # Placed explicitly so these Jobs do not land on an application node.
+      nodeSelector:
+        workload: jenkins
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: jenkins
+          effect: NoSchedule
+
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+
+prometheus:
+  ingress:
+    enabled: false
+
+  prometheusSpec:
+    nodeSelector:
+      workload: jenkins
+    tolerations:
+      - key: workload
+        operator: Equal
+        value: jenkins
+        effect: NoSchedule
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 750Mi
+      limits:
+        cpu: 500m
+        memory: 1536Mi
+
+    retention: 7d
+    retentionSize: 6GiB
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: taskflow-gp3
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 10Gi
+
+    # Discovery is scoped by namespace instead of by this release's labels.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [observability, devops-app, jenkins]
+
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [observability, devops-app, jenkins]
+
+    ruleSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    ruleNamespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values: [observability, devops-app, jenkins]
