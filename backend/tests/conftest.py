@@ -50,9 +50,9 @@ FAKE_ENVIRONMENT = {
 os.environ.update(FAKE_ENVIRONMENT)
 
 # Cleared so the suite observes the defaults, not a stray shell value.
-RELEASE_ENVIRONMENT = ("APP_VERSION", "GIT_COMMIT", "RELEASE_REF")
+CLEARED_ENVIRONMENT = ("APP_VERSION", "GIT_COMMIT", "RELEASE_REF", "TASKFLOW_FAIL_EVERY")
 
-for variable in RELEASE_ENVIRONMENT:
+for variable in CLEARED_ENVIRONMENT:
     os.environ.pop(variable, None)
 
 

@@ -307,6 +307,7 @@ pipeline {
                     )
 
                     Map annotations = [:]
+                    Map environment = [:]
                     Map digests = [:]
                     for (service in env.SERVICES.split(' ')) {
                         annotations[service] = [
@@ -315,10 +316,15 @@ pipeline {
                             'taskflow.io/image-tag'  : env.RELEASE_TAG,
                             'taskflow.io/deployed-by': env.RELEASE_DEPLOYED_BY,
                         ]
+                        environment[service] = [
+                            'APP_VERSION': env.RELEASE_TAG,
+                            'GIT_COMMIT' : env.RELEASE_COMMIT,
+                            'RELEASE_REF': env.RELEASE_CI_REF,
+                        ]
                         digests[service] = manifest.images[service].digest
                     }
 
-                    writeReleaseAnnotations(changeCause, annotations)
+                    writeReleaseAnnotations(changeCause, annotations, environment)
                     setReleaseImages(digests)
                 }
 
@@ -431,6 +437,7 @@ pipeline {
                             digest     : digest,
                             reference  : image,
                             annotations: declared.annotations,
+                            environment: declared.environment,
                         ]
 
                         echo "${service} : ${image}"
@@ -440,7 +447,7 @@ pipeline {
                         file: env.PREVIOUS_FILE,
                         pretty: 2,
                         json: [
-                            schemaVersion: 1,
+                            schemaVersion: 2,
                             capturedAt   : utcTimestamp(),
                             cluster      : env.TARGET_CLUSTER,
                             namespace    : env.RELEASE_NAMESPACE,
@@ -528,6 +535,12 @@ pipeline {
                                 row[6] != env.RELEASE_TAG || row[7] != env.RELEASE_DEPLOYED_BY) {
                                 error("Pod ${row[0]} carries release annotations from another release: " +
                                     "${row[4]} / ${row[5]} / ${row[6]} / ${row[7]}")
+                            }
+
+                            if (row[8] != env.RELEASE_TAG || row[9] != env.RELEASE_COMMIT ||
+                                row[10] != env.RELEASE_CI_REF) {
+                                error("Pod ${row[0]} carries release metadata from another release: " +
+                                    "${row[8]} / ${row[9]} / ${row[10]}")
                             }
 
                             echo "${row[0]} : ${row[3]}"
@@ -685,6 +698,16 @@ List provenanceAnnotationKeys() {
     ]
 }
 
+// The same provenance the annotations carry, delivered to the process so it can
+// publish it as a metric. Order is fixed so the rendered patch is stable.
+List releaseEnvironmentKeys() {
+    return [
+        'APP_VERSION',
+        'GIT_COMMIT',
+        'RELEASE_REF',
+    ]
+}
+
 // An interactive run carries a user; a run triggered by CI or a webhook carries
 // none, so the cause description is used instead of inventing an operator.
 String releaseTriggeredBy() {
@@ -712,10 +735,14 @@ String utcTimestamp() {
 // Deployment, where rollout history reads it; the provenance annotations go on
 // the Pod template so they describe the image revision they live with.
 //
-// A service with no recorded annotations gets no Pod template block at all. The
-// base Deployments carry none, so apply then removes whatever the previous
-// release left rather than merging the two.
-void writeReleaseAnnotations(String changeCause, Map annotationsByService) {
+// A service with nothing recorded gets no Pod template block at all. The base
+// Deployments carry none, so apply then removes whatever the previous release
+// left rather than merging the two.
+//
+// The environment block names the container, so the strategic merge keeps every
+// other container field, and env merges by variable name rather than replacing
+// the list the base Deployment already declares.
+void writeReleaseAnnotations(String changeCause, Map annotationsByService, Map environmentByService) {
     String patch = ''
 
     for (service in env.SERVICES.split(' ')) {
@@ -730,15 +757,33 @@ metadata:
 """
 
         Map annotations = annotationsByService[service] ?: [:]
-        String rendered = ''
+        String renderedAnnotations = ''
         for (key in provenanceAnnotationKeys()) {
             if (annotations[key]) {
-                rendered += "        ${key}: \"${annotations[key]}\"\n"
+                renderedAnnotations += "        ${key}: \"${annotations[key]}\"\n"
             }
         }
 
-        if (rendered) {
-            patch += "spec:\n  template:\n    metadata:\n      annotations:\n" + rendered
+        Map variables = environmentByService[service] ?: [:]
+        String renderedEnvironment = ''
+        for (key in releaseEnvironmentKeys()) {
+            if (variables[key]) {
+                renderedEnvironment += "            - name: ${key}\n"
+                renderedEnvironment += "              value: \"${variables[key]}\"\n"
+            }
+        }
+
+        if (renderedAnnotations || renderedEnvironment) {
+            patch += "spec:\n  template:\n"
+        }
+
+        if (renderedAnnotations) {
+            patch += "    metadata:\n      annotations:\n" + renderedAnnotations
+        }
+
+        if (renderedEnvironment) {
+            patch += "    spec:\n      containers:\n        - name: ${service}\n          env:\n"
+            patch += renderedEnvironment
         }
     }
 
@@ -765,16 +810,21 @@ void setReleaseImages(Map digestByService) {
 // Pods of one Deployment that are neither terminating nor finished. A rollout
 // that has already reported success can still leave an old Pod terminating, and
 // counting that Pod would report a version mismatch that does not exist.
-// Columns: name, deletionTimestamp, phase, image, then the four provenance
-// annotations in the order provenanceAnnotationKeys() returns them.
+// Columns: name, deletionTimestamp, phase, image, then the provenance annotations
+// and the release variables, each in the order their key list returns them.
 List runningPodRows(String service) {
     String jsonPath = '{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}{.status.phase}' +
         "{\"|\"}{.spec.containers[?(@.name==\"${service}\")].image}" +
         '{"|"}{.metadata.annotations.taskflow\\.io/git-commit}' +
         '{"|"}{.metadata.annotations.taskflow\\.io/ci-build}' +
         '{"|"}{.metadata.annotations.taskflow\\.io/image-tag}' +
-        '{"|"}{.metadata.annotations.taskflow\\.io/deployed-by}' +
-        '{"\\n"}{end}'
+        '{"|"}{.metadata.annotations.taskflow\\.io/deployed-by}'
+
+    for (key in releaseEnvironmentKeys()) {
+        jsonPath += "{\"|\"}{.spec.containers[?(@.name==\"${service}\")].env[?(@.name==\"${key}\")].value}"
+    }
+
+    jsonPath += '{"\\n"}{end}'
 
     String raw = ''
     container('kubectl') {
@@ -840,7 +890,21 @@ Map declaredState(String service) {
         }
     }
 
-    return [reference: matching[0].image.toString(), annotations: annotations]
+    // Only literal values: a variable sourced from a ConfigMap or Secret has no
+    // value to record and is not part of the release identity.
+    Map variables = [:]
+    for (variable in (matching[0].env ?: [])) {
+        String name = variable.name.toString()
+        if (releaseEnvironmentKeys().contains(name) && variable.value != null) {
+            variables[name] = sanitiseAnnotation(variable.value.toString())
+        }
+    }
+
+    return [
+        reference  : matching[0].image.toString(),
+        annotations: annotations,
+        environment: variables,
+    ]
 }
 
 // One definition of "still the recorded previous state", shared by the drift
@@ -848,9 +912,9 @@ Map declaredState(String service) {
 // each rollback path.
 //
 // The image alone is not enough. Redeploying the same digest with different
-// provenance annotations changes the environment, and a rollback that only
-// compared digests would leave the failed release's traceability record sitting
-// on the restored image.
+// provenance annotations or release variables changes the environment, and a
+// rollback that only compared digests would leave the failed release's
+// traceability record sitting on the restored image.
 //
 // Both the declared Pod template and every running Pod have to match: an apply
 // that updated the Deployment but whose Pods have not appeared yet is still a
@@ -863,7 +927,8 @@ List servicesDifferingFrom(Map recordedServices) {
         Map declared = declaredState(service)
 
         if (declared.reference != recorded.reference ||
-            !annotationsMatchRecorded(declared.annotations, recorded.annotations)) {
+            !recordedValuesMatch(provenanceAnnotationKeys(), declared.annotations, recorded.annotations) ||
+            !recordedValuesMatch(releaseEnvironmentKeys(), declared.environment, recorded.environment)) {
             differing.add(service)
             continue
         }
@@ -874,17 +939,27 @@ List servicesDifferingFrom(Map recordedServices) {
             continue
         }
 
+        List keys = provenanceAnnotationKeys()
+        List variables = releaseEnvironmentKeys()
+
         for (row in rows) {
             Map podAnnotations = [:]
-            List keys = provenanceAnnotationKeys()
             for (int i = 0; i < keys.size(); i++) {
                 if (row[4 + i]) {
                     podAnnotations[keys[i]] = row[4 + i]
                 }
             }
 
+            Map podEnvironment = [:]
+            for (int i = 0; i < variables.size(); i++) {
+                if (row[4 + keys.size() + i]) {
+                    podEnvironment[variables[i]] = row[4 + keys.size() + i]
+                }
+            }
+
             if (row[3] != recorded.reference ||
-                !annotationsMatchRecorded(podAnnotations, recorded.annotations)) {
+                !recordedValuesMatch(keys, podAnnotations, recorded.annotations) ||
+                !recordedValuesMatch(variables, podEnvironment, recorded.environment)) {
                 differing.add(service)
                 break
             }
@@ -895,8 +970,8 @@ List servicesDifferingFrom(Map recordedServices) {
 }
 
 // A key absent from the recorded state is expected to be absent live too.
-boolean annotationsMatchRecorded(Map live, Map recorded) {
-    for (key in provenanceAnnotationKeys()) {
+boolean recordedValuesMatch(List keys, Map live, Map recorded) {
+    for (key in keys) {
         String liveValue = (live != null && live.containsKey(key)) ? live[key].toString() : ''
         String recordedValue = (recorded != null && recorded.containsKey(key)) ? recorded[key].toString() : ''
 
@@ -960,8 +1035,8 @@ void collectDiagnostics() {
 // record stays true to the image it sits on. Its result is then checked against
 // the state recorded before the deploy - that recording, not the revision
 // history, is what defines "previous". If that check fails, the same narrow
-// release mechanism reapplies the recorded digests and their annotations
-// directly.
+// release mechanism reapplies the recorded digests, provenance annotations, and
+// release metadata directly.
 void rollbackRelease() {
     String outcome
 
@@ -995,7 +1070,7 @@ void rollbackRelease() {
             if (runtimeMatchesRecordedState(previous.services)) {
                 outcome = 'restored by rollout undo'
             } else {
-                echo 'rollout undo did not restore the recorded digests; reapplying them directly.'
+                echo 'rollout undo did not restore the recorded release state; reapplying it directly.'
             }
         } catch (Exception undoFailure) {
             echo "rollout undo failed: ${undoFailure.message}"
@@ -1004,14 +1079,20 @@ void rollbackRelease() {
         if (outcome == 'FAILED') {
             Map digests = [:]
             Map annotations = [:]
+            Map environment = [:]
             for (service in env.SERVICES.split(' ')) {
                 digests[service] = previous.services[service].digest
                 annotations[service] = previous.services[service].annotations
+                // A state recorded before releases carried these variables has
+                // none to restore, so the reapply drops them rather than leaving
+                // the failed release's values behind.
+                environment[service] = previous.services[service].environment ?: [:]
             }
 
             writeReleaseAnnotations(
                 sanitiseAnnotation("Rollback to the release recorded before ${env.JOB_NAME}#${env.BUILD_NUMBER}"),
                 annotations,
+                environment,
             )
             setReleaseImages(digests)
 

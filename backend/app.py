@@ -9,6 +9,7 @@ This Backend service:
 - sends events to the Worker service
 """
 
+import itertools
 import os
 
 import boto3
@@ -50,6 +51,11 @@ WORKER_URL = os.getenv("WORKER_URL", "http://127.0.0.1:6000")
 AWS_REGION = os.getenv("AWS_REGION")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "pdf", "txt"}
+
+# Routes the deliberate failure switch never touches.
+FAILURE_FREE_ROUTES = frozenset({"/metrics", "/health", "/live", "/ready"})
+
+_request_sequence = itertools.count(1)
 
 s3_client = boto3.client(
     "s3",
@@ -115,6 +121,33 @@ def get_request_user_id():
         return int(raw)
     except ValueError:
         return None
+
+
+def failure_interval():
+    """Return N when deliberate failures are enabled, 0 when they are off."""
+    try:
+        interval = int(os.getenv("TASKFLOW_FAIL_EVERY", "0"))
+    except ValueError:
+        return 0
+
+    return max(interval, 0)
+
+
+@app.before_request
+def inject_controlled_failure():
+    """Answer every Nth matched business request with 503 while the switch is set."""
+    interval = failure_interval()
+    rule = request.url_rule
+
+    if not interval or rule is None or rule.rule in FAILURE_FREE_ROUTES:
+        return None
+
+    if next(_request_sequence) % interval:
+        return None
+
+    return jsonify({
+        "error": "Service temporarily unavailable",
+    }), 503
 
 
 @app.errorhandler(413)

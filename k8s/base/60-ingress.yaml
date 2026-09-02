@@ -17,6 +17,10 @@ metadata:
     # TLS 1.2 and 1.3 only. The policy is named here rather than inherited, so
     # the listener does not depend on the controller's implicit default.
     alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    # Block public access to the internal metrics endpoint.
+    alb.ingress.kubernetes.io/actions.deny-metrics: >
+      {"type":"fixed-response","fixedResponseConfig":
+      {"statusCode":"404","contentType":"text/plain","messageBody":"Not Found"}}
 spec:
   ingressClassName: alb
   rules:
@@ -26,6 +30,13 @@ spec:
     - host: taskflow.plus
       http:
         paths:
+          - path: /metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: deny-metrics
+                port:
+                  name: use-annotation
           - path: /
             pathType: Prefix
             backend:
