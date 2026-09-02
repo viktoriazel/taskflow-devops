@@ -11,9 +11,12 @@ import boto3
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
 
+from worker_metrics import init_metrics, record_sns_failure
+
 load_dotenv()
 
 app = Flask(__name__)
+init_metrics(app)
 
 AWS_REGION = os.getenv("AWS_REGION")
 SNS_TOPIC_ARN = os.getenv("SNS_TOPIC_ARN")
@@ -148,6 +151,7 @@ def notify():
             Message=message,
         )
     except Exception as e:
+        record_sns_failure()
         app.logger.error(
             "SNS publish failed for event '%s' on task '%s': %s",
             event,

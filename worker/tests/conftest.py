@@ -15,6 +15,10 @@ import pytest
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 MODULE_NAME = "taskflow_worker"
 
+# pytest puts worker/tests on sys.path, not worker/, where worker_metrics sits.
+if str(SERVICE_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVICE_DIR))
+
 # Set unconditionally, never via setdefault: real AWS credentials or a real topic
 # ARN from the shell or worker/.env must not leak into the test run.
 FAKE_ENVIRONMENT = {
@@ -28,6 +32,12 @@ FAKE_ENVIRONMENT = {
 }
 
 os.environ.update(FAKE_ENVIRONMENT)
+
+# Cleared so the suite observes the defaults, not a stray shell value.
+RELEASE_ENVIRONMENT = ("APP_VERSION", "GIT_COMMIT", "RELEASE_REF")
+
+for variable in RELEASE_ENVIRONMENT:
+    os.environ.pop(variable, None)
 
 
 class NoSns:
