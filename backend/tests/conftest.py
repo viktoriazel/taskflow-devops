@@ -18,6 +18,10 @@ SERVICE_DIR = Path(__file__).resolve().parents[1]
 # Unique name, not "app": frontend/app.py would collide with it in a repo-wide run.
 APP_MODULE_NAME = "taskflow_backend_app"
 
+# pytest puts backend/tests on sys.path, not backend/, where backend_metrics sits.
+if str(SERVICE_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVICE_DIR))
+
 # Stubbed to raise until a test opts in, so an unexpected query cannot pass unnoticed.
 DB_FUNCTIONS = (
     "add_file_to_todo",
@@ -44,6 +48,12 @@ FAKE_ENVIRONMENT = {
 }
 
 os.environ.update(FAKE_ENVIRONMENT)
+
+# Cleared so the suite observes the defaults, not a stray shell value.
+RELEASE_ENVIRONMENT = ("APP_VERSION", "GIT_COMMIT", "RELEASE_REF")
+
+for variable in RELEASE_ENVIRONMENT:
+    os.environ.pop(variable, None)
 
 
 def _unstubbed(function_name):

@@ -7,6 +7,8 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, redirect, render_template, request, session
 
+from frontend_metrics import init_metrics, record_backend_failure
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -17,6 +19,8 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
 )
+
+init_metrics(app)
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:5000")
 
@@ -295,6 +299,9 @@ def view_uploaded_file(file_key):
     )
 
     if response.status_code != 200:
+        # 4xx answers are ownership and lookup outcomes, not a failing dependency.
+        if response.status_code >= 500:
+            record_backend_failure()
         try:
             error_message = response.json().get("error", "File could not be loaded.")
         except Exception:

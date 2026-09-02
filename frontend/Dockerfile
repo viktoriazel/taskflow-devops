@@ -23,7 +23,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code — root-owned, read-only for appuser
-COPY --chmod=0644 app.py .
+COPY --chmod=0644 app.py frontend_metrics.py .
 COPY templates/ templates/
 RUN chmod 0755 templates && chmod 0644 templates/*.html
 
@@ -31,4 +31,4 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "60", "--no-control-socket", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--threads", "4", "--timeout", "60", "--no-control-socket", "app:app"]

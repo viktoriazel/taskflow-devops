@@ -18,6 +18,12 @@ from flask import Flask, jsonify, redirect, request
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
+from backend_metrics import (
+    init_metrics,
+    record_s3_failure,
+    record_todo_created,
+    record_worker_failure,
+)
 from db import (
     add_file_to_todo,
     create_todo_record,
@@ -35,6 +41,8 @@ load_dotenv()
 app = Flask(__name__)
 # Limit uploads to 30 MB to avoid very large files.
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
+
+init_metrics(app)
 
 init_database()
 
@@ -75,6 +83,7 @@ def notify_worker(event, title):
             timeout=5,
         )
     except requests.RequestException as e:
+        record_worker_failure()
         app.logger.warning(
             "Worker notification failed for event '%s' on task '%s': %s",
             event,
@@ -296,6 +305,7 @@ def create_todo():
         }), 400
 
     todo = create_todo_record(title, user_id)
+    record_todo_created()
 
     app.logger.info("Todo created: todo_id=%s, user_id=%s", todo["id"], user_id)
 
@@ -506,6 +516,7 @@ def upload_file(todo_id):
             },
         )
     except Exception as e:
+        record_s3_failure()
         app.logger.error(
             "S3 upload failed for todo %s, file '%s': %s",
             todo_id,

@@ -25,7 +25,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Application code — root-owned, read-only for appuser
-COPY --chmod=0644 worker.py .
+COPY --chmod=0644 worker.py worker_metrics.py .
 
 USER appuser
 

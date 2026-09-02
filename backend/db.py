@@ -14,6 +14,8 @@ import psycopg2
 from dotenv import load_dotenv
 from psycopg2.extras import RealDictCursor
 
+from backend_metrics import record_postgres_failure
+
 load_dotenv()
 
 
@@ -38,6 +40,7 @@ def get_connection():
             connect_timeout=5,
         )
     except psycopg2.OperationalError as e:
+        record_postgres_failure()
         logging.error("Database connection failed: %s", e)
         raise
 

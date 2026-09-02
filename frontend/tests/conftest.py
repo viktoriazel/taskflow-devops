@@ -15,6 +15,10 @@ SERVICE_DIR = Path(__file__).resolve().parents[1]
 # Unique name, not "app": backend/app.py would collide with it in a repo-wide run.
 APP_MODULE_NAME = "taskflow_frontend_app"
 
+# pytest puts frontend/tests on sys.path, not frontend/, where frontend_metrics sits.
+if str(SERVICE_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVICE_DIR))
+
 # Set unconditionally, never via setdefault: a real SECRET_KEY or BACKEND_URL
 # from the shell or frontend/.env must not leak into the test run. The .invalid
 # TLD never resolves, so a stray request cannot reach a real Backend either.
@@ -24,6 +28,12 @@ FAKE_ENVIRONMENT = {
 }
 
 os.environ.update(FAKE_ENVIRONMENT)
+
+# Cleared so the suite observes the defaults, not a stray shell value.
+RELEASE_ENVIRONMENT = ("APP_VERSION", "GIT_COMMIT", "RELEASE_REF")
+
+for variable in RELEASE_ENVIRONMENT:
+    os.environ.pop(variable, None)
 
 
 class NoNetwork:
