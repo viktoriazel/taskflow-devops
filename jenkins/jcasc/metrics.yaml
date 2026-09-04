@@ -1,0 +1,22 @@
+# Prometheus metrics configuration for the Jenkins controller.
+
+unclassified:
+  prometheusConfiguration:
+    path: "prometheus"
+    useAuthenticatedEndpoint: false
+    collectingMetricsPeriodInSeconds: 60
+    collectNodeStatus: true
+
+    countSuccessfulBuilds: true
+    countUnstableBuilds: true
+    countFailedBuilds: true
+    countNotBuiltBuilds: true
+    countAbortedBuilds: true
+
+    # Cardinality controls.
+    perBuildMetrics: false
+    appendParamLabel: false
+    appendStatusLabel: false
+
+    collectDiskUsage: false
+    fetchTestResults: false

@@ -53,6 +53,10 @@ AGENT_RBAC_MANIFESTS=(
 # shellcheck disable=SC2034
 WEBHOOK_INGRESS_MANIFEST="${JENKINS_DIR}/webhook-ingress.yaml"
 
+# Dedicated Jenkins metrics Service manifest.
+# shellcheck disable=SC2034
+METRICS_SERVICE_MANIFEST="${JENKINS_DIR}/metrics-service.yaml"
+
 # The namespace the CD Role is created in. Not overridable, because
 # jenkins/rbac/cd-agent-rbac.yaml names this namespace directly.
 APP_NAMESPACE="devops-app"
@@ -78,6 +82,7 @@ JCASC_FILES=(
     "taskflow-clouds:clouds.yaml"
     "taskflow-github:github.yaml"
     "taskflow-jobs:jobs.yaml"
+    "taskflow-metrics:metrics.yaml"
 )
 
 # Named separately because create-jobs.sh also reads the SCM settings from it.

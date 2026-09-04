@@ -1,0 +1,20 @@
+# Jenkins controller metrics scrape configuration.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jenkins-metrics
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: taskflow
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jenkins
+      app.kubernetes.io/component: metrics
+  endpoints:
+    # The plugin endpoint requires a trailing slash.
+    - port: http-metrics
+      path: /prometheus/
+      interval: 60s

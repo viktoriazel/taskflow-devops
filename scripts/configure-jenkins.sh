@@ -63,7 +63,7 @@ step "Preflight"
 require_commands kubectl helm sha256sum
 load_chart_env
 require_repo_files "$VALUES_FILE" "$RBAC_MANIFEST" "${AGENT_RBAC_MANIFESTS[@]}" \
-    "$WEBHOOK_INGRESS_MANIFEST"
+    "$METRICS_SERVICE_MANIFEST" "$WEBHOOK_INGRESS_MANIFEST"
 jcasc_set_file_args
 
 info "repo root: ${REPO_ROOT}"
@@ -128,6 +128,18 @@ for manifest in "${AGENT_RBAC_MANIFESTS[@]}"; do
         kubectl apply -f "$manifest"
     fi
 done
+
+# --------------------------------------------------------------------------
+# Metrics Service
+# --------------------------------------------------------------------------
+
+step "Metrics Service"
+
+if [[ "$DRY_RUN" == true ]]; then
+    kubectl apply --dry-run=client -f "$METRICS_SERVICE_MANIFEST"
+else
+    kubectl apply -f "$METRICS_SERVICE_MANIFEST"
+fi
 
 # --------------------------------------------------------------------------
 # Webhook Ingress

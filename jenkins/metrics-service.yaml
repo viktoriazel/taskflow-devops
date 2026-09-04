@@ -1,0 +1,20 @@
+# Dedicated Service for Prometheus scraping of the Jenkins controller.
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-metrics
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: taskflow
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/component: jenkins-controller
+    app.kubernetes.io/instance: jenkins
+  ports:
+    - name: http-metrics
+      protocol: TCP
+      port: 8080
+      targetPort: http

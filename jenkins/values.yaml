@@ -46,6 +46,7 @@ controller:
     - copyartifact:795.ve8e151429b_27
     - timestamper:1.30
     - ws-cleanup:0.49
+    - prometheus:860.v532442b_44e9a_
 
   # Chart default is true, which pulls the latest dependencies at install time.
   installLatestPlugins: false

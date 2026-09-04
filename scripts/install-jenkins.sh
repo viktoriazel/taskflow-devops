@@ -78,7 +78,8 @@ step "Preflight"
 require_commands kubectl helm sha256sum
 load_chart_env
 require_repo_files "$VALUES_FILE" "$NAMESPACE_MANIFEST" "$STORAGECLASS_MANIFEST" \
-    "$RBAC_MANIFEST" "${AGENT_RBAC_MANIFESTS[@]}" "$WEBHOOK_INGRESS_MANIFEST"
+    "$RBAC_MANIFEST" "${AGENT_RBAC_MANIFESTS[@]}" "$METRICS_SERVICE_MANIFEST" \
+    "$WEBHOOK_INGRESS_MANIFEST"
 jcasc_set_file_args
 
 info "repo root: ${REPO_ROOT}"
@@ -204,9 +205,12 @@ if [[ "$DRY_RUN" == true ]]; then
     helm "${helm_args[@]}" --dry-run >/dev/null
     info "release renders cleanly; nothing was applied"
 
-    # The real run applies this after the release, which a dry run never
+    # The real run applies these after the release, which a dry run never
     # reaches. Validated here instead, so --dry-run still covers every manifest
     # the script would apply.
+    step "Metrics Service"
+    kubectl apply --dry-run=client -f "$METRICS_SERVICE_MANIFEST"
+
     step "Webhook Ingress"
     kubectl apply --dry-run=client -f "$WEBHOOK_INGRESS_MANIFEST"
 
@@ -215,6 +219,14 @@ if [[ "$DRY_RUN" == true ]]; then
 fi
 
 helm "${helm_args[@]}"
+
+# --------------------------------------------------------------------------
+# Metrics Service
+# --------------------------------------------------------------------------
+
+step "Metrics Service"
+
+kubectl apply -f "$METRICS_SERVICE_MANIFEST"
 
 # --------------------------------------------------------------------------
 # Webhook Ingress
