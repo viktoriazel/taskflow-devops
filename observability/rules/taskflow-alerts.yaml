@@ -1,0 +1,102 @@
+# TaskFlow alert rules for application, Kubernetes, Jenkins, and monitoring health.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: taskflow-alerts
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: taskflow-alerts
+    app.kubernetes.io/part-of: taskflow
+spec:
+  groups:
+    - name: taskflow-application
+      rules:
+        - alert: HighErrorRate
+          expr: |
+            sum by (namespace, service) (
+              rate(taskflow_http_requests_total{namespace="devops-app", status=~"5.."}[5m])
+            )
+            /
+            sum by (namespace, service) (
+              rate(taskflow_http_requests_total{namespace="devops-app"}[5m])
+            )
+            > 0.05
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "High 5xx rate for {{ $labels.service }}"
+            description: "5xx responses exceeded 5% of requests for 5 minutes in namespace {{ $labels.namespace }}."
+            runbook: "observability/runbooks/high-error-rate.md"
+
+        - alert: HighLatencyP95
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum by (le, namespace, service) (
+                rate(taskflow_http_request_duration_seconds_bucket{namespace="devops-app"}[5m])
+              )
+            ) > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High p95 latency for {{ $labels.service }}"
+            description: "p95 request latency exceeded 0.5 seconds for 10 minutes in namespace {{ $labels.namespace }}."
+            runbook: "observability/runbooks/high-latency-p95.md"
+
+    - name: taskflow-kubernetes
+      rules:
+        - alert: ReplicasMismatch
+          expr: |
+            max by (namespace, deployment) (
+              kube_deployment_status_replicas_available{namespace=~"devops-app|observability"}
+            )
+            <
+            max by (namespace, deployment) (
+              kube_deployment_spec_replicas{namespace=~"devops-app|observability"}
+            )
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Deployment replicas unavailable for {{ $labels.deployment }}"
+            description: "Available replicas have remained below desired replicas for 5 minutes in namespace {{ $labels.namespace }}."
+            runbook: "observability/runbooks/replicas-mismatch.md"
+
+        - alert: NodeNotReady
+          expr: |
+            max by (node) (
+              kube_node_status_condition{condition="Ready", status="true"}
+            ) == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Kubernetes node not Ready: {{ $labels.node }}"
+            description: "Node {{ $labels.node }} has not reported Ready for 5 minutes."
+            runbook: "observability/runbooks/node-not-ready.md"
+
+    - name: taskflow-jenkins
+      rules:
+        - alert: JenkinsQueueStuck
+          expr: jenkins_queue_size_value{namespace="jenkins"} > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Jenkins queue is not draining"
+            description: "The Jenkins queue has remained non-empty for 5 minutes."
+            runbook: "observability/runbooks/jenkins-queue-stuck.md"
+
+    - name: taskflow-monitoring
+      rules:
+        - alert: PrometheusTargetDown
+          expr: up{namespace=~"devops-app|jenkins|observability"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Prometheus target down: {{ $labels.job }}"
+            description: "Target {{ $labels.instance }} for job {{ $labels.job }} has been down for 5 minutes."
+            runbook: "observability/runbooks/prometheus-target-down.md"

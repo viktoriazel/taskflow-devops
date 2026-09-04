@@ -34,6 +34,9 @@ alertmanager:
             sigv4:
               region: eu-north-1
             send_resolved: true
+            # SNS rejects a Subject over 100 characters. The built-in default
+            # expands past that, so the subject is pinned to status and alert name.
+            subject: '{{ .Status }}: {{ .CommonLabels.alertname }}'
 
   alertmanagerSpec:
     nodeSelector:

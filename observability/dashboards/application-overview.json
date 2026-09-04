@@ -131,7 +131,7 @@
       "id": 3,
       "type": "stat",
       "title": "Availability",
-      "description": "One minus the 5xx ratio over the selected time range, so it uses the same failure definition as the 5xx panel. The SLO threshold is defined separately with the alerting rules.",
+      "description": "Availability over the last 24 hours. SLO: at least 99% of application requests complete without a 5xx response.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -147,15 +147,18 @@
           "unit": "percentunit",
           "decimals": 3,
           "color": {
-            "mode": "fixed",
-            "fixedColor": "text"
+            "mode": "thresholds"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "text",
+                "color": "red",
                 "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.99
               }
             ]
           }
@@ -163,7 +166,7 @@
         "overrides": []
       },
       "options": {
-        "colorMode": "none",
+        "colorMode": "value",
         "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
@@ -185,7 +188,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "1 - ((sum(increase(taskflow_http_requests_total{namespace=\"devops-app\", service=~\"$service\", pod=~\"$pod\", status=~\"5..\"}[$__range])) or vector(0)) / sum(increase(taskflow_http_requests_total{namespace=\"devops-app\", service=~\"$service\", pod=~\"$pod\"}[$__range])))",
+          "expr": "1 - ((sum(increase(taskflow_http_requests_total{namespace=\"devops-app\", service=~\"$service\", pod=~\"$pod\", status=~\"5..\"}[24h])) or vector(0)) / sum(increase(taskflow_http_requests_total{namespace=\"devops-app\", service=~\"$service\", pod=~\"$pod\"}[24h])))",
           "instant": true,
           "legendFormat": "availability",
           "range": false
@@ -196,7 +199,7 @@
       "id": 4,
       "type": "timeseries",
       "title": "Latency Percentiles",
-      "description": "Request duration at the 50th, 95th and 99th percentile, from the request duration histogram.",
+      "description": "Request latency percentiles by service. SLO: p95 below 0.5 seconds; alert evaluation uses a 5-minute window.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -220,7 +223,23 @@
             "fillOpacity": 0,
             "lineWidth": 1,
             "showPoints": "never",
-            "spanNulls": false
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.5
+              }
+            ]
           }
         },
         "overrides": []
