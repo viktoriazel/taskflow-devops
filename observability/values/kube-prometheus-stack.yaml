@@ -86,13 +86,16 @@ grafana:
       value: jenkins
       effect: NoSchedule
 
+  # Grafana 13 idles at ~220Mi working set, of which roughly 60Mi sits outside
+  # the Go heap, so GOMEMLIMIT alone cannot hold the container under its cgroup
+  # limit. Sized from the measured steady state and peak.
   resources:
     requests:
       cpu: 30m
-      memory: 128Mi
+      memory: 256Mi
     limits:
       cpu: 200m
-      memory: 256Mi
+      memory: 512Mi
 
 # Managed EKS exposes no endpoint for these. kube-proxy stays enabled: this
 # cluster binds its metrics to 0.0.0.0:10249.
