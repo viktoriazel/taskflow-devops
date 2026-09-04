@@ -13,3 +13,5 @@ configMapGenerator:
   - name: grafana-dashboards
     files:
       - application-overview.json
+      - kubernetes-cluster.json
+      - jenkins-delivery.json
