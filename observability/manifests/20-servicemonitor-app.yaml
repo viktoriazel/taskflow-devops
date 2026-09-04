@@ -1,0 +1,62 @@
+# Scrape targets for the three TaskFlow application services.
+#
+# These live in the application namespace, not in observability: the Prometheus
+# instance selects ServiceMonitors by namespace (see
+# observability/values/kube-prometheus-stack.yaml), so no release label is
+# needed and the default namespaceSelector - the object's own namespace - is
+# what matches the Services.
+#
+# Each selector pairs the service identity with part-of, so a future Service in
+# devops-app cannot be picked up by accident. The endpoint refers to the port by
+# name, which is why k8s/base/*-service.yaml name their port `http`.
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: frontend
+  namespace: devops-app
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: taskflow
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+      app.kubernetes.io/part-of: taskflow
+  endpoints:
+    - port: http
+      path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: backend
+  namespace: devops-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: taskflow
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+      app.kubernetes.io/part-of: taskflow
+  endpoints:
+    - port: http
+      path: /metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: worker
+  namespace: devops-app
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: taskflow
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+      app.kubernetes.io/part-of: taskflow
+  endpoints:
+    - port: http
+      path: /metrics
