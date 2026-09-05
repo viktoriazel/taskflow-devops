@@ -91,3 +91,15 @@ The same dashboard covers build duration and queue wait for the latest build, dy
 Build rate and non-successful builds are shown together with Jenkins queue behavior during pipeline execution.
 
 ![Jenkins delivery activity](./15_jenkins_delivery_activity.png)
+
+## 🟣 16 — Monitoring Gate Targets
+
+The post-deploy monitoring gate queries Prometheus and confirms healthy scrape targets for the Frontend, Backend, and Worker services.
+
+![Monitoring gate scrape targets](./16_cd_monitoring_targets_up.png)
+
+## 🟣 17 — Monitoring Gate Passed
+
+The monitoring gate generates real application traffic, waits for the scrape, and validates error ratio and p95 latency against their thresholds before the release is declared healthy.
+
+![Monitoring gate passed](./17_cd_monitoring_gate_passed.png)
