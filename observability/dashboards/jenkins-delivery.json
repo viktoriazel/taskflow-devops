@@ -36,7 +36,7 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
+        "w": 4,
         "x": 0,
         "y": 0
       },
@@ -123,8 +123,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 6,
-        "x": 6,
+        "w": 4,
+        "x": 4,
         "y": 0
       },
       "fieldConfig": {
@@ -196,8 +196,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 0
       },
       "fieldConfig": {
@@ -284,8 +284,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 0,
-        "y": 4
+        "x": 12,
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -378,7 +378,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 13
       },
       "fieldConfig": {
         "defaults": {
@@ -438,7 +438,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 11
+        "y": 20
       },
       "fieldConfig": {
         "defaults": {
@@ -542,7 +542,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 11
+        "y": 20
       },
       "fieldConfig": {
         "defaults": {
@@ -614,7 +614,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 18
+        "y": 13
       },
       "fieldConfig": {
         "defaults": {
@@ -673,8 +673,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 12,
-        "y": 18
+        "x": 0,
+        "y": 27
       },
       "fieldConfig": {
         "defaults": {
@@ -759,9 +759,9 @@
       },
       "gridPos": {
         "h": 9,
-        "w": 14,
+        "w": 24,
         "x": 0,
-        "y": 25
+        "y": 4
       },
       "fieldConfig": {
         "defaults": {
@@ -826,10 +826,10 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 9,
-        "w": 10,
-        "x": 14,
-        "y": 25
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 0
       },
       "fieldConfig": {
         "defaults": {
