@@ -73,3 +73,21 @@ After recovery, all TaskFlow alert rules are inactive and monitoring has returne
 Alertmanager successfully delivers the controlled alert notification through Amazon SNS to email.
 
 ![SNS alert notification email](./12_sns_alert_notification.jpg)
+
+## 🟣 13 — Jenkins Delivery Overview
+
+The Jenkins and Delivery dashboard shows Jenkins controller health, live queue activity, successful CI and CD results, deployed release information, and stage durations for the latest pipeline run.
+
+![Jenkins delivery overview](./13_jenkins_delivery_overview.png)
+
+## 🟣 14 — Jenkins Delivery Performance
+
+The same dashboard covers build duration and queue wait for the latest build, dynamic executor and agent activity, and controller JVM heap and CPU usage.
+
+![Jenkins delivery performance](./14_jenkins_delivery_performance.png)
+
+## 🟣 15 — Jenkins Delivery Activity
+
+Build rate and non-successful builds are shown together with Jenkins queue behavior during pipeline execution.
+
+![Jenkins delivery activity](./15_jenkins_delivery_activity.png)
