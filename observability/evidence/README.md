@@ -169,3 +169,27 @@ The failed release is automatically rolled back and the previous healthy deploym
 Application metrics show the temporary 5xx impact from the rejected release and recovery after rollback.
 
 ![Bad release dashboard impact](./28_bad_release_dashboard_impact.png)
+
+## 🟣 29 — Observability Removed, PVC Preserved
+
+The observability runtime is removed while the Prometheus PVC remains bound for recovery.
+
+![Observability removed, PVC preserved](./29_observability_removed_pvc_preserved.png)
+
+## 🟣 30 — Prometheus Targets Restored
+
+Prometheus is restored from code and all TaskFlow application and Jenkins scrape targets are healthy.
+
+![Prometheus targets restored](./30_prometheus_targets_restored.png)
+
+## 🟣 31 — Grafana Dashboards Restored
+
+All three Grafana dashboards are restored from code after the observability reinstall.
+
+![Grafana dashboards restored](./31_grafana_dashboards_restored.png)
+
+## 🟣 32 — Alert Rules Restored
+
+All six TaskFlow alert rules are restored from code and loaded successfully after the observability reinstall.
+
+![Alert rules restored](./32_alert_rules_restored.png)
