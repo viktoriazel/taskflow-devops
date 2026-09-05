@@ -103,3 +103,51 @@ The post-deploy monitoring gate queries Prometheus and confirms healthy scrape t
 The monitoring gate generates real application traffic, waits for the scrape, and validates error ratio and p95 latency against their thresholds before the release is declared healthy.
 
 ![Monitoring gate passed](./17_cd_monitoring_gate_passed.png)
+
+## 🟣 18 — Kubernetes Replicas Mismatch
+
+During the controlled readiness failure the Worker deployment has 2 desired replicas but only 1 available replica.
+
+![Kubernetes replicas mismatch](./18_kubernetes_replicas_mismatch.png)
+
+## 🟣 19 — ReplicasMismatch Firing
+
+Prometheus shows ReplicasMismatch firing for the Worker deployment after available replicas stayed below desired replicas for 5 minutes.
+
+![ReplicasMismatch alert firing](./19_replicas_mismatch_firing.png)
+
+## 🟣 20 — Kubernetes Replicas Recovered
+
+After recovery the Worker deployment is back to 2 desired replicas and 2 available replicas.
+
+![Kubernetes replicas recovered](./20_kubernetes_replicas_recovered.png)
+
+## 🟣 21 — ReplicasMismatch Resolved
+
+ReplicasMismatch returns to the inactive state once the Worker deployment has recovered.
+
+![ReplicasMismatch alert resolved](./21_replicas_mismatch_resolved.png)
+
+## 🟣 22 — Jenkins Queue Waiting
+
+Jenkins remains UP while 2 builds wait in the queue because the dynamic agent cannot be scheduled.
+
+![Jenkins queue waiting](./22_jenkins_queue_waiting.png)
+
+## 🟣 23 — JenkinsQueueStuck Firing
+
+JenkinsQueueStuck is firing after the Jenkins queue remained non-empty for 5 minutes.
+
+![JenkinsQueueStuck alert firing](./23_jenkins_queue_stuck_firing.png)
+
+## 🟣 24 — Jenkins Queue Recovered
+
+Jenkins queue returned to zero and delivery recovered successfully.
+
+![Jenkins queue recovered](./24_jenkins_queue_recovered.png)
+
+## 🟣 25 — JenkinsQueueStuck Resolved
+
+JenkinsQueueStuck returned to inactive after the queue drained.
+
+![JenkinsQueueStuck alert resolved](./25_jenkins_queue_stuck_resolved.png)
