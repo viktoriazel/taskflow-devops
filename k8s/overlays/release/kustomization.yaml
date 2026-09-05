@@ -14,13 +14,8 @@ resources:
 
 # Add release provenance to the Deployment and Pod template without changing
 # any other workload fields.
-#
-# The second patch is a temporary failure override: it turns on the Frontend
-# failure switch for a controlled failure test of release health validation.
-# Removing this reference and the file it names disables the override.
 patches:
   - path: release-annotations.yaml
-  - path: release-fault-injection.yaml
 
 # Release image baseline.
 #
