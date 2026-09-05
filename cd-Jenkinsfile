@@ -1162,49 +1162,143 @@ Double promScalar(String description, String query) {
 // checks below would have no signal to judge the release on. Only the
 // application services are required here: Jenkins is monitored as its own
 // domain and its scrape health says nothing about this release.
+//
+// What has to be healthy is the release that is running now, so Kubernetes owns
+// the question of which targets are expected and Prometheus only answers whether
+// it can scrape them. Reading the answer alone cannot tell the two apart: a
+// rollout leaves the endpoint of a replaced Pod in service discovery for a while
+// after the Pod is gone, and that target reports up=0 for the rest of its short
+// life. Judging the release on every series the query returns therefore failed
+// releases that were serving correctly, on the presence of a Pod that had already
+// been withdrawn.
 void verifyScrapeTargets() {
     List services = env.SERVICES.split(' ').toList()
+
+    Map expected = [:]
+    for (service in services) {
+        expected[service] = currentServicePods(service)
+    }
 
     List series = promQuery(
         'scrape target',
         "up{namespace=\"${env.RELEASE_NAMESPACE}\", job=~\"${services.join('|')}\"}",
     )
 
-    List down = []
-    Map targetsByService = [:]
+    Map samples = scrapeSamplesByPod(series)
+    List rows = scrapeTargetReport(expected, samples)
 
-    for (sample in series) {
-        String job = sample.metric.job
-        String instance = sample.metric.instance
-        boolean isUp = sample.value[1].toString() == '1'
+    List faults = []
+    for (row in rows) {
+        echo "current ${row.service} ${row.instance ?: '(no Pod)'} : ${row.state}"
 
-        targetsByService[job] = (targetsByService[job] ?: 0) + 1
-        if (!isUp) {
-            down.add("${job} ${instance}")
-        }
-
-        echo "target ${job} ${instance} : ${isUp ? 'up' : 'DOWN'}"
-    }
-
-    // Prometheus not knowing a service at all and knowing it as unreachable are
-    // different faults, and only the second one has a target to name.
-    List undiscovered = []
-    for (service in services) {
-        if (!targetsByService[service]) {
-            undiscovered.add(service)
+        if (row.state != 'up') {
+            faults.add(row.pod
+                ? "${row.service} ${row.pod} (${row.instance}): ${row.state}"
+                : "${row.service}: ${row.state}")
         }
     }
 
-    if (down || undiscovered) {
-        error('Monitoring gate: the application scrape targets are not healthy. ' +
-            (down ? "Down: ${down.join(', ')}. " : '') +
-            (undiscovered ? "No target discovered for: ${undiscovered.join(', ')}. " : '') +
+    // Recorded rather than judged. A series Kubernetes has no current Pod for
+    // belongs to a Pod this release replaced, and its scrape health is a fact
+    // about a workload that is no longer serving.
+    for (name in samples.keySet()) {
+        if (!currentPodNames(expected).contains(name)) {
+            def stale = samples[name]
+            echo "ignored ${stale.metric.job} ${stale.metric.instance} : not a Pod of the current release"
+        }
+    }
+
+    if (faults) {
+        error('Monitoring gate: the scrape targets of the current release are not healthy. ' +
+            "${faults.join('; ')}. " +
             'Runbook: observability/runbooks/prometheus-target-down.md')
     }
+}
 
-    for (service in services) {
-        echo "${service} : ${targetsByService[service]} scrape target(s) up"
+// The `up` series of one query, indexed by the Pod each one describes. The
+// application ServiceMonitors in observability/manifests/20-servicemonitor-app.yaml
+// select Services in the release namespace, so every target they produce is an
+// endpoint of a Pod and carries the `pod` label naming it.
+//
+// A series without that label describes nothing this gate can attribute to a Pod
+// of the release. It is left out of the index, which makes it an extra target
+// rather than a missing one, and a Pod whose target is missing still fails below.
+Map scrapeSamplesByPod(List series) {
+    Map byPod = [:]
+
+    for (sample in series) {
+        def metric = sample.metric
+        if (metric.containsKey('pod') && metric['pod']) {
+            byPod[metric['pod'].toString()] = sample
+        }
     }
+
+    return byPod
+}
+
+// One verdict per Pod the release is currently serving from, from the two sets
+// the caller has already read: what Kubernetes is serving and what Prometheus
+// can scrape.
+//
+// A Pod is matched to its series by Pod name, not by address. The name
+// identifies the current Pod resource, whereas an address is returned to the
+// pool once a Pod is replaced and can be reused - the very rollout that leaves a
+// stale target behind can hand that same address to a Pod of the new release -
+// so an address alone does not say which workload a series belongs to. The
+// address is still compared, as an additional consistency check: a series
+// carrying a current Pod's name and some other endpoint's address is not a
+// measurement of that Pod and must not read as one.
+List scrapeTargetReport(Map expectedByService, Map samplesByPod) {
+    List rows = []
+
+    for (service in expectedByService.keySet()) {
+        List pods = expectedByService[service]
+
+        // Nothing is serving this service, so there is no release to confirm
+        // healthy. This is a fault in its own right: a gate that read it as
+        // "no Pod, no failing target" would pass a service that had vanished.
+        if (!pods) {
+            rows.add([service: service, pod: null, instance: null,
+                      state: 'no Running and Ready Pod'])
+            continue
+        }
+
+        for (pod in pods) {
+            def sample = samplesByPod[pod.name]
+            String instance = pod.address
+            String state = 'up'
+
+            if (!sample) {
+                state = 'no scrape target'
+            } else {
+                instance = sample.metric.instance.toString()
+
+                if (!instance.startsWith("${pod.address}:")) {
+                    state = 'scrape target address does not match the Pod'
+                } else if (sample.value[1].toString() != '1') {
+                    state = 'DOWN'
+                }
+            }
+
+            rows.add([service: service, pod: pod.name, instance: instance, state: state])
+        }
+    }
+
+    return rows
+}
+
+// The names of every Pod the release is currently serving from, flattened across
+// the services.
+List currentPodNames(Map expectedByService) {
+    List names = []
+
+    for (service in expectedByService.keySet()) {
+        for (pod in expectedByService[service]) {
+            names.add(pod.name)
+        }
+    }
+
+    return names
 }
 
 // Traffic of the same kind as the measurement, sent before it, so that every
@@ -1275,47 +1369,62 @@ void primeGateSeries() {
     }
 }
 
-// The addresses of the Pods currently serving the gated Service, read with the
-// same namespaced list permission the release verification already uses.
+// The Pods currently serving one Service, read with the same namespaced list
+// permission the release verification already uses. Name and address, in the
+// order the API server returns them.
 //
-// A Pod that is terminating, not yet Running, or without an address is not
-// serving and is left out. Every remaining Pod is one Prometheus scrapes and the
-// measured traffic can be balanced onto, so every one of them needs a baseline.
+// This is the gate's definition of the release that is running: a Pod that is
+// terminating, not Running, not Ready, or without an address is excluded from
+// the set of targets expected for the current release. Every remaining Pod is
+// one Prometheus scrapes and the measured traffic can be balanced onto, so every
+// one of them both needs a baseline and has to be confirmed healthy.
 //
-// The addresses are interpolated into a shell command, so they are constrained
-// first. The cluster runs the ipv4 family, so a Pod address is a dotted quad and
-// goes into a URL unbracketed; anything else is not one of this cluster's Pods
-// and stops the build rather than being sent to curl.
-List gateServicePodAddresses() {
-    String jsonPath = '{range .items[*]}{.metadata.deletionTimestamp}{"|"}' +
-        '{.status.phase}{"|"}{.status.podIP}{"\\n"}{end}'
+// The addresses are interpolated into a shell command by the priming path, so
+// they are constrained here. The cluster runs the ipv4 family, so a Pod address
+// is a dotted quad and goes into a URL unbracketed; anything else is not one of
+// this cluster's Pods and stops the build rather than being sent to curl.
+List currentServicePods(String service) {
+    String jsonPath = '{range .items[*]}{.metadata.name}{"|"}{.metadata.deletionTimestamp}{"|"}' +
+        '{.status.phase}{"|"}{.status.podIP}{"|"}' +
+        '{.status.conditions[?(@.type=="Ready")].status}{"\\n"}{end}'
 
     String raw = ''
     container('kubectl') {
         raw = sh(
             returnStdout: true,
             script: 'kubectl get pods --namespace "$RELEASE_NAMESPACE"' +
-                " --selector app.kubernetes.io/name=${env.GATE_SERVICE}" +
+                " --selector app.kubernetes.io/name=${service}" +
                 " -o jsonpath='${jsonPath}'",
         )
     }
 
-    List addresses = []
+    List pods = []
     for (line in raw.split('\n')) {
         if (!line.trim()) {
             continue
         }
 
         List cells = line.split('\\|', -1).toList()
-        if (cells[0] || cells[1] != 'Running' || !cells[2]) {
+        if (cells[1] || cells[2] != 'Running' || !cells[3] || cells[4] != 'True') {
             continue
         }
 
-        if (!(cells[2] ==~ /^(?:\d{1,3}\.){3}\d{1,3}$/)) {
-            error("Monitoring gate: ${env.GATE_SERVICE} Pod address '${cells[2]}' is not an IPv4 address.")
+        if (!(cells[3] ==~ /^(?:\d{1,3}\.){3}\d{1,3}$/)) {
+            error("Monitoring gate: ${service} Pod address '${cells[3]}' is not an IPv4 address.")
         }
 
-        addresses.add(cells[2])
+        pods.add([name: cells[0], address: cells[3]])
+    }
+
+    return pods
+}
+
+// The addresses of the Pods currently serving the gated Service, for the
+// per-Pod baseline traffic.
+List gateServicePodAddresses() {
+    List addresses = []
+    for (pod in currentServicePods(env.GATE_SERVICE)) {
+        addresses.add(pod.address)
     }
 
     if (!addresses) {
