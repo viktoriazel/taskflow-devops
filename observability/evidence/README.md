@@ -151,3 +151,21 @@ Jenkins queue returned to zero and delivery recovered successfully.
 JenkinsQueueStuck returned to inactive after the queue drained.
 
 ![JenkinsQueueStuck alert resolved](./25_jenkins_queue_stuck_resolved.png)
+
+## 🟣 26 — Unhealthy Release Rejected
+
+The monitoring gate rejects the release after the frontend 5xx ratio reaches 0.33, above the 0.05 threshold.
+
+![Unhealthy release rejected](./26_unhealthy_release_rejected.png)
+
+## 🟣 27 — Automatic Rollback Completed
+
+The failed release is automatically rolled back and the previous healthy deployments are restored.
+
+![Automatic rollback completed](./27_automatic_rollback_completed.png)
+
+## 🟣 28 — Bad Release Dashboard Impact
+
+Application metrics show the temporary 5xx impact from the rejected release and recovery after rollback.
+
+![Bad release dashboard impact](./28_bad_release_dashboard_impact.png)
