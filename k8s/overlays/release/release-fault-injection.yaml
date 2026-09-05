@@ -1,0 +1,26 @@
+# Temporary failure override for a controlled failure test of release health
+# validation.
+#
+# TASKFLOW_FAIL_EVERY makes the Frontend answer every Nth matched page request
+# with 503. The probe and scrape endpoints are never affected, so rollout and
+# readiness still complete and the smoke test still finds /login answering; what
+# changes is the 5xx ratio the monitoring gate reads back from Prometheus.
+#
+# The override is temporary. It is referenced from kustomization.yaml, so
+# deleting both the reference and this file returns every release to the base
+# behaviour, where the variable is unset and the switch is off. k8s/base carries
+# no such variable, so bootstrap stays healthy either way.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: devops-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: frontend
+          env:
+            - name: TASKFLOW_FAIL_EVERY
+              value: "3"

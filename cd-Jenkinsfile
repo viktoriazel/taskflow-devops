@@ -72,10 +72,38 @@ pipeline {
         GATE_PATH     = '/login'
         GATE_REQUESTS = '30'
 
-        // One scrape interval plus margin. Prometheus scrapes these targets every
-        // 30s, so this is the shortest wait that reliably puts the generated
-        // traffic inside the range the queries below read.
-        GATE_SCRAPE_WAIT = '45'
+        // Baseline traffic, sent to each frontend Pod directly before the wait
+        // below. The port is the containerPort the Pods serve on, from
+        // k8s/base/deployments/50-frontend-deployment.yaml.
+        //
+        // A release that answers every Nth request with 5xx produces a ratio of
+        // 1/N, which is above GATE_MAX_ERROR_RATIO only while N is below its
+        // reciprocal, 1 / 0.05 = 20. Twenty requests per Pod therefore record the
+        // 5xx series ahead of the measured traffic for every failure rate this
+        // gate is written to fail on, the every-third-request override of the
+        // controlled failure test included.
+        GATE_PRIME_PORT     = '8000'
+        GATE_PRIME_REQUESTS = '20'
+
+        // Prometheus scrapes these targets every 30s: the application
+        // ServiceMonitors in observability/manifests/20-servicemonitor-app.yaml
+        // set no interval of their own, so the Prometheus default applies.
+        //
+        // A counter series only starts existing once a matching request has been
+        // scraped, and rate() needs two samples of a series before it can report
+        // anything. Both waits are sized from that. The first covers one full
+        // scrape interval plus margin and does two things at once: it gives the
+        // Pods this release just rolled out a complete interval to be scraped
+        // before their targets are checked, and it leaves the traffic metrics
+        // with a sample that predates the traffic the checks measure.
+        GATE_BASELINE_WAIT = '40'
+
+        // The second covers two full scrape intervals plus margin, so a series
+        // that first appears during the generated traffic - a 5xx status the
+        // release was not serving before - is still scraped twice before the
+        // checks read it. One interval was enough for traffic to be visible but
+        // left that series with a single sample, which rate() reads as no data.
+        GATE_SCRAPE_WAIT = '75'
 
         // The window and thresholds of HighErrorRate and HighLatencyP95 in
         // observability/rules/taskflow-alerts.yaml. Evaluated once here rather
@@ -659,9 +687,22 @@ pipeline {
         // fails on the cheaper check. curl is in the default agent container and
         // the Prometheus API needs no Kubernetes credential, so this introduces
         // neither a new container nor a new permission.
+        //
+        // The targets are checked after the baseline wait, not before it: a Pod
+        // that has just become Ready is a target Prometheus has discovered but
+        // not yet scraped, and reading it that early reports a healthy release as
+        // down. The same wait is what the request metrics need, so waiting once
+        // serves both.
         stage('Monitoring Gate') {
             steps {
                 script {
+                    primeGateSeries()
+
+                    echo "Waiting ${env.GATE_BASELINE_WAIT}s: one full scrape interval for " +
+                        'Prometheus to reach the rolled-out Pods, and for the baseline requests ' +
+                        'to be scraped ahead of the traffic the checks measure.'
+                    sleep(time: env.GATE_BASELINE_WAIT.toInteger(), unit: 'SECONDS')
+
                     verifyScrapeTargets()
                     generateGateTraffic()
 
@@ -1164,6 +1205,126 @@ void verifyScrapeTargets() {
     for (service in services) {
         echo "${service} : ${targetsByService[service]} scrape target(s) up"
     }
+}
+
+// Traffic of the same kind as the measurement, sent before it, so that every
+// metric series the checks read already exists and has been scraped once.
+//
+// Both metrics are built lazily. prometheus_client materialises a child series
+// the first time that exact labelset is recorded, so a Pod that has just rolled
+// out exports no taskflow_http_requests_total for the gated route at all, and no
+// status="5.." child until it has actually answered a request with one. A series
+// first scraped after the traffic that created it carries the full count in its
+// first sample, and every later scrape repeats it, so rate() over that series is
+// zero: Prometheus never observed the increase, because it never observed the
+// series beforehand. A 5xx series born that way reads as no errors while the
+// denominator, whose series is older, reads normally - which is a failing
+// release passing the gate.
+//
+// One request through the load balancer does not prevent that. It reaches one
+// replica and leaves the others with no series at all, and it records only the
+// status it happened to receive. So each current Pod is primed on its own
+// address, often enough that a release failing every Nth request has recorded
+// its 5xx series before the measurement starts.
+//
+// This is the only traffic that does not travel the public route, and it exists
+// solely to create the series; a Pod address is not a user-facing endpoint and
+// nothing is measured from these requests. GET on the gated route renders a form
+// - it reads no user data, writes nothing and needs no credential - so 200 and
+// 503 are both acceptable answers here and a healthy release legitimately
+// returns only the first. A request that never arrived is not, because the Pod
+// it was meant for would enter the measurement without a baseline.
+void primeGateSeries() {
+    List addresses = gateServicePodAddresses()
+
+    echo "priming ${env.GATE_PATH} with ${env.GATE_PRIME_REQUESTS} request(s) on each of " +
+        "${addresses.size()} ${env.GATE_SERVICE} Pod(s): ${addresses.join(', ')}"
+
+    withEnv(["GATE_PRIME_TARGETS=${addresses.join(' ')}".toString()]) {
+        sh '''
+            set -eu
+
+            for target in $GATE_PRIME_TARGETS; do
+                url="http://$target:$GATE_PRIME_PORT$GATE_PATH"
+                sent=0
+                unreachable=0
+
+                while [ "$sent" -lt "$GATE_PRIME_REQUESTS" ]; do
+                    status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url")" || status=000
+
+                    if [ "$status" = "000" ]; then
+                        sleep 1
+                        status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url")" || status=000
+                    fi
+
+                    if [ "$status" = "000" ]; then
+                        unreachable=$((unreachable + 1))
+                    fi
+
+                    sent=$((sent + 1))
+                done
+
+                echo "baseline $url : $sent sent, $unreachable unreachable"
+
+                # Any answered status records the series it belongs to, so no
+                # status is checked here. A request that never arrived records
+                # nothing, and this Pod would go into the measurement blind.
+                [ "$unreachable" -eq 0 ]
+            done
+        '''
+    }
+}
+
+// The addresses of the Pods currently serving the gated Service, read with the
+// same namespaced list permission the release verification already uses.
+//
+// A Pod that is terminating, not yet Running, or without an address is not
+// serving and is left out. Every remaining Pod is one Prometheus scrapes and the
+// measured traffic can be balanced onto, so every one of them needs a baseline.
+//
+// The addresses are interpolated into a shell command, so they are constrained
+// first. The cluster runs the ipv4 family, so a Pod address is a dotted quad and
+// goes into a URL unbracketed; anything else is not one of this cluster's Pods
+// and stops the build rather than being sent to curl.
+List gateServicePodAddresses() {
+    String jsonPath = '{range .items[*]}{.metadata.deletionTimestamp}{"|"}' +
+        '{.status.phase}{"|"}{.status.podIP}{"\\n"}{end}'
+
+    String raw = ''
+    container('kubectl') {
+        raw = sh(
+            returnStdout: true,
+            script: 'kubectl get pods --namespace "$RELEASE_NAMESPACE"' +
+                " --selector app.kubernetes.io/name=${env.GATE_SERVICE}" +
+                " -o jsonpath='${jsonPath}'",
+        )
+    }
+
+    List addresses = []
+    for (line in raw.split('\n')) {
+        if (!line.trim()) {
+            continue
+        }
+
+        List cells = line.split('\\|', -1).toList()
+        if (cells[0] || cells[1] != 'Running' || !cells[2]) {
+            continue
+        }
+
+        if (!(cells[2] ==~ /^(?:\d{1,3}\.){3}\d{1,3}$/)) {
+            error("Monitoring gate: ${env.GATE_SERVICE} Pod address '${cells[2]}' is not an IPv4 address.")
+        }
+
+        addresses.add(cells[2])
+    }
+
+    if (!addresses) {
+        error("Monitoring gate: no running ${env.GATE_SERVICE} Pod has an address to prime, so the " +
+            'checks would be reading metric series Prometheus first saw during the traffic they measure. ' +
+            'Runbook: observability/runbooks/prometheus-target-down.md')
+    }
+
+    return addresses
 }
 
 // Real requests over the endpoint the smoke test already proved reachable. It is

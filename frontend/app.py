@@ -1,6 +1,7 @@
 """Frontend service for TaskFlow."""
 
 import functools
+import itertools
 import os
 
 import requests
@@ -23,6 +24,13 @@ app.config.update(
 init_metrics(app)
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:5000")
+
+# Probe and scrape endpoints, which the deliberate failure switch never touches.
+FAILURE_FREE_ROUTES = frozenset({"/metrics", "/health", "/live", "/ready"})
+
+# Shared by the threads of one gunicorn worker. next() on itertools.count runs
+# entirely in C without releasing the GIL, so each caller gets its own number.
+_request_sequence = itertools.count(1)
 
 
 def login_required(f):
@@ -57,6 +65,38 @@ def auth_headers():
         dict, e.g. {"X-User-Id": "42"}.
     """
     return {"X-User-Id": str(session["user_id"])}
+
+
+def failure_interval():
+    """Return N when deliberate failures are enabled, 0 when they are off."""
+    try:
+        interval = int(os.getenv("TASKFLOW_FAIL_EVERY", "0"))
+    except ValueError:
+        return 0
+
+    return max(interval, 0)
+
+
+@app.before_request
+def inject_controlled_failure():
+    """Answer every Nth matched page request with 503 while the switch is set.
+
+    Registered after init_metrics, so the timer of the metrics module has already
+    started and the response below is counted like any other: same route label,
+    status 503. Requests that matched no rule are left alone, and the sequence is
+    only advanced once a request can actually fail, so an off switch consumes no
+    numbers.
+    """
+    interval = failure_interval()
+    rule = request.url_rule
+
+    if not interval or rule is None or rule.rule in FAILURE_FREE_ROUTES:
+        return None
+
+    if next(_request_sequence) % interval:
+        return None
+
+    return {"error": "Service temporarily unavailable"}, 503
 
 
 @app.route("/login", methods=["GET", "POST"])
