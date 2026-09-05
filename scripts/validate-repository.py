@@ -17,6 +17,7 @@ Run it directly from anywhere:
 Exit status is 0 when every check passes and 1 when any of them fails.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -48,6 +49,30 @@ KUSTOMIZATION_ROOTS = (
 IMAGE_PLACEHOLDER_TAG = "IMAGE-NOT-SET"
 
 KUSTOMIZATION_KIND = "Kustomization"
+
+# Monitoring configuration. Checked for shape only: whether the objects are
+# accepted by the cluster is decided by the API server, and whether the queries
+# return anything is decided by Prometheus. Neither is reachable from here.
+MONITORING_DIRS = (
+    "observability/manifests",
+    "observability/rules",
+)
+
+DASHBOARD_DIR = "observability/dashboards"
+
+MONITORING_API_GROUP = "monitoring.coreos.com/"
+
+SCRAPE_KINDS = {
+    "ServiceMonitor": "endpoints",
+    "PodMonitor": "podMetricsEndpoints",
+}
+
+RULE_KIND = "PrometheusRule"
+
+# Every alert has to carry enough for whoever is paged to act on it: how urgent
+# it is, what happened, and where the procedure is written down.
+ALERT_LABELS = ("severity",)
+ALERT_ANNOTATIONS = ("summary", "description", "runbook")
 
 
 class Report:
@@ -373,6 +398,273 @@ def collect_image_references(documents):
     return references
 
 
+def mapping_field(report, subject, document, field):
+    """Return a mapping-valued field, or an empty mapping once the failure is recorded."""
+    value = document.get(field)
+
+    if not report.record(isinstance(value, dict), f"{subject} {field} is a mapping",
+                         f"parsed as {type(value).__name__}"):
+        return {}
+
+    return value
+
+
+def check_monitoring_manifests(report):
+    """Check the shape of the scrape targets and alert rules the stack is built on.
+
+    Shape only. Whether the API server accepts an object and whether Prometheus
+    can evaluate an expression are runtime questions, and neither the cluster nor
+    Prometheus is reachable from here.
+    """
+    report.section("Monitoring configuration")
+
+    scrape_targets = 0
+    alert_rules = 0
+
+    for directory in MONITORING_DIRS:
+        root = REPO_ROOT / directory
+        if not report.record(root.is_dir(), f"{directory}/ is present"):
+            continue
+
+        for path in sorted(root.rglob("*.yaml")):
+            relative = path.relative_to(REPO_ROOT)
+
+            try:
+                documents = load_yaml_documents(path)
+            except yaml.YAMLError as error:
+                report.record(False, f"{relative} parses as YAML", str(error).replace("\n", " "))
+                continue
+
+            report.record(True, f"{relative} parses as YAML")
+
+            for index, document in enumerate(documents):
+                if not report.record(isinstance(document, dict),
+                                     f"{relative} document {index} is a YAML mapping",
+                                     f"parsed as {type(document).__name__}"):
+                    continue
+
+                kind = document.get("kind")
+
+                if kind in SCRAPE_KINDS:
+                    scrape_targets += 1
+                    check_scrape_target(report, relative, document)
+                elif kind == RULE_KIND:
+                    alert_rules += check_prometheus_rule(report, relative, document)
+
+    report.record(scrape_targets > 0, "a scrape target is defined",
+                  f"{scrape_targets} found")
+    report.record(alert_rules > 0, "an alert rule is defined", f"{alert_rules} found")
+
+
+def check_scrape_target(report, relative, document):
+    """A ServiceMonitor or PodMonitor that selects nothing, or names no port, is
+    discovered by the operator and then scrapes nothing at all.
+    """
+    kind = document["kind"]
+    endpoints_field = SCRAPE_KINDS[kind]
+
+    api_version = document.get("apiVersion", "")
+    report.record(isinstance(api_version, str) and api_version.startswith(MONITORING_API_GROUP),
+                  f"{relative} {kind} declares a {MONITORING_API_GROUP}* apiVersion",
+                  f"apiVersion={api_version!r}")
+
+    metadata = mapping_field(report, f"{relative} {kind}", document, "metadata")
+    name = metadata.get("name")
+    report.record(isinstance(name, str) and bool(name),
+                  f"{relative} {kind} declares metadata.name", f"name={name!r}")
+
+    subject = f"{relative} {kind} {name or '<unnamed>'}"
+
+    spec = mapping_field(report, subject, document, "spec")
+    if not spec:
+        return
+
+    selector = spec.get("selector")
+    report.record(isinstance(selector, dict) and
+                  bool(selector.get("matchLabels") or selector.get("matchExpressions")),
+                  f"{subject} selects its targets by label")
+
+    endpoints = spec.get(endpoints_field)
+    if not report.record(isinstance(endpoints, list) and bool(endpoints),
+                         f"{subject} declares at least one {endpoints_field} entry"):
+        return
+
+    for index, endpoint in enumerate(endpoints):
+        if not report.record(isinstance(endpoint, dict),
+                             f"{subject} {endpoints_field}[{index}] is a mapping",
+                             f"parsed as {type(endpoint).__name__}"):
+            continue
+
+        report.record(bool(endpoint.get("port") or endpoint.get("targetPort")),
+                      f"{subject} {endpoints_field}[{index}] names a port")
+
+
+def check_prometheus_rule(report, relative, document):
+    """Check one PrometheusRule and return the number of alert rules it declares."""
+    api_version = document.get("apiVersion", "")
+    report.record(isinstance(api_version, str) and api_version.startswith(MONITORING_API_GROUP),
+                  f"{relative} {RULE_KIND} declares a {MONITORING_API_GROUP}* apiVersion",
+                  f"apiVersion={api_version!r}")
+
+    metadata = mapping_field(report, f"{relative} {RULE_KIND}", document, "metadata")
+    name = metadata.get("name")
+    report.record(isinstance(name, str) and bool(name),
+                  f"{relative} {RULE_KIND} declares metadata.name", f"name={name!r}")
+
+    spec = mapping_field(report, f"{relative} {RULE_KIND}", document, "spec")
+    groups = spec.get("groups")
+
+    if not report.record(isinstance(groups, list) and bool(groups),
+                         f"{relative} declares at least one rule group"):
+        return 0
+
+    alerts = 0
+
+    for index, group in enumerate(groups):
+        if not report.record(isinstance(group, dict), f"{relative} group {index} is a mapping",
+                             f"parsed as {type(group).__name__}"):
+            continue
+
+        group_name = group.get("name")
+        report.record(bool(group_name), f"{relative} group {index} declares a name")
+
+        rules = group.get("rules")
+        if not report.record(isinstance(rules, list) and bool(rules),
+                             f"{relative} group {group_name!r} declares at least one rule"):
+            continue
+
+        for rule in rules:
+            if not report.record(isinstance(rule, dict),
+                                 f"{relative} group {group_name!r} rule is a mapping",
+                                 f"parsed as {type(rule).__name__}"):
+                continue
+
+            alert = rule.get("alert")
+            if not alert:
+                # A recording rule carries none of the metadata checked below.
+                continue
+
+            alerts += 1
+            check_alert_rule(report, relative, alert, rule)
+
+    return alerts
+
+
+def check_alert_rule(report, relative, alert, rule):
+    """Whoever is paged needs the urgency, what happened, and where the procedure is."""
+    subject = f"{relative} alert {alert}"
+
+    report.record(bool(rule.get("expr")), f"{subject} declares an expression")
+
+    labels = rule.get("labels")
+    labels = labels if isinstance(labels, dict) else {}
+    for key in ALERT_LABELS:
+        report.record(bool(labels.get(key)), f"{subject} carries the {key} label")
+
+    annotations = rule.get("annotations")
+    annotations = annotations if isinstance(annotations, dict) else {}
+    for key in ALERT_ANNOTATIONS:
+        report.record(bool(annotations.get(key)), f"{subject} carries the {key} annotation")
+
+    # The reference is a repository-relative path, so it can be resolved here. A
+    # runbook that names a procedure nobody can open is the same as no runbook.
+    runbook = annotations.get("runbook")
+    if isinstance(runbook, str) and runbook:
+        target = (REPO_ROOT / runbook).resolve()
+        report.record(target.is_file() and target.is_relative_to(REPO_ROOT),
+                      f"{subject} points at a runbook in the repository", runbook)
+
+
+def check_dashboards(report):
+    report.section("Grafana dashboards")
+
+    root = REPO_ROOT / DASHBOARD_DIR
+    if not report.record(root.is_dir(), f"{DASHBOARD_DIR}/ is present"):
+        return
+
+    dashboards = sorted(root.glob("*.json"))
+    if not report.record(bool(dashboards), f"{DASHBOARD_DIR}/ holds at least one dashboard",
+                         f"{len(dashboards)} found"):
+        return
+
+    for path in dashboards:
+        relative = path.relative_to(REPO_ROOT)
+
+        try:
+            dashboard = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            report.record(False, f"{relative} parses as JSON", str(error))
+            continue
+
+        report.record(True, f"{relative} parses as JSON")
+
+        if not report.record(isinstance(dashboard, dict), f"{relative} is a JSON object",
+                             f"parsed as {type(dashboard).__name__}"):
+            continue
+
+        report.record(bool(dashboard.get("title")), f"{relative} declares a title")
+
+        # The uid is what the dashboard is addressed by, so an import that
+        # replaces it in place depends on it staying the same.
+        report.record(bool(dashboard.get("uid")), f"{relative} declares a uid")
+
+        panels = dashboard.get("panels")
+        if not report.record(isinstance(panels, list) and bool(panels),
+                             f"{relative} declares at least one panel"):
+            continue
+
+        untyped = [
+            index
+            for index, panel in enumerate(panels)
+            if not (isinstance(panel, dict) and panel.get("type"))
+        ]
+        report.record(not untyped, f"{relative} declares a type on every panel",
+                      f"panels {untyped}" if untyped else "")
+
+    check_dashboards_are_loaded(report, dashboards)
+
+
+def check_dashboards_are_loaded(report, dashboards):
+    """A dashboard the generated ConfigMap does not list never reaches Grafana.
+
+    The sidecar loads the dashboards out of that ConfigMap, so a file added to
+    the directory but forgotten in the generator is tracked and never displayed,
+    exactly as a manifest missing from a Kustomization is never applied.
+    """
+    kustomization = REPO_ROOT / DASHBOARD_DIR / "kustomization.yaml"
+    relative = kustomization.relative_to(REPO_ROOT)
+
+    if not report.record(kustomization.is_file(), f"{relative} is present"):
+        return
+
+    try:
+        documents = load_yaml_documents(kustomization)
+    except yaml.YAMLError as error:
+        report.record(False, f"{relative} parses as YAML", str(error).replace("\n", " "))
+        return
+
+    report.record(True, f"{relative} parses as YAML")
+
+    document = check_kustomization_shape(report, relative, documents)
+    if document is None:
+        return
+
+    listed = set()
+    for generator in kustomization_list(report, relative, document, "configMapGenerator"):
+        if not report.record(isinstance(generator, dict),
+                             f"{relative} configMapGenerator entry is a mapping",
+                             f"parsed as {type(generator).__name__}"):
+            continue
+
+        for entry in generator.get("files") or []:
+            if isinstance(entry, str):
+                # A files entry is either a path or key=path.
+                listed.add(entry.rsplit("=", 1)[-1])
+
+    for path in dashboards:
+        report.record(path.name in listed, f"{path.relative_to(REPO_ROOT)} is loaded by {relative}")
+
+
 def check_pinned_dev_requirements(report):
     report.section("Pinned tooling")
 
@@ -412,6 +704,9 @@ def main():
 
     check_every_manifest_is_referenced(report, manifests)
     check_manifests(report, manifests)
+
+    check_monitoring_manifests(report)
+    check_dashboards(report)
 
     print(f"\n{report.checks - report.failures}/{report.checks} checks passed")
 

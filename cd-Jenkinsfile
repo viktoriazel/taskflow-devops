@@ -58,6 +58,33 @@ pipeline {
         RELEASE_DIR    = 'k8s/overlays/release'
 
         ROLLOUT_TIMEOUT = '180s'
+
+        // Monitoring gate. Prometheus is reached on its in-cluster Service, never
+        // through an Ingress; the jenkins namespace is allowed to it on 9090 by
+        // observability/manifests/10-networkpolicy.yaml.
+        PROMETHEUS_URL = 'http://observability-kube-prometh-prometheus.observability.svc.cluster.local:9090'
+        PROMETHEUS_RESULT = '.render/prometheus-result.json'
+
+        // The gate drives the frontend over its own public route, so the error
+        // and latency checks read the signal that traffic actually produces. All
+        // three services are still required to be up as scrape targets.
+        GATE_SERVICE  = 'frontend'
+        GATE_PATH     = '/login'
+        GATE_REQUESTS = '30'
+
+        // One scrape interval plus margin. Prometheus scrapes these targets every
+        // 30s, so this is the shortest wait that reliably puts the generated
+        // traffic inside the range the queries below read.
+        GATE_SCRAPE_WAIT = '45'
+
+        // The window and thresholds of HighErrorRate and HighLatencyP95 in
+        // observability/rules/taskflow-alerts.yaml. Evaluated once here rather
+        // than over the alerts' for-duration; the values themselves are the
+        // alerts' own, so the gate and the alerts cannot disagree about what
+        // healthy means.
+        GATE_WINDOW          = '5m'
+        GATE_MAX_ERROR_RATIO = '0.05'
+        GATE_MAX_LATENCY_P95 = '0.5'
     }
 
     stages {
@@ -620,6 +647,34 @@ pipeline {
                 '''
             }
         }
+
+        // Running Pods on the verified digest answer "was the right artifact
+        // deployed", not "is the release healthy". This stage asks the monitoring
+        // system that question instead: every application service has to be a
+        // scrape target Prometheus currently sees, and the traffic this stage
+        // generates itself has to come back inside the same error and latency
+        // bounds the alert rules hold the service to.
+        //
+        // Runs after the smoke test, so a release that is already unreachable
+        // fails on the cheaper check. curl is in the default agent container and
+        // the Prometheus API needs no Kubernetes credential, so this introduces
+        // neither a new container nor a new permission.
+        stage('Monitoring Gate') {
+            steps {
+                script {
+                    verifyScrapeTargets()
+                    generateGateTraffic()
+
+                    echo "Waiting ${env.GATE_SCRAPE_WAIT}s for the generated traffic to be scraped."
+                    sleep(time: env.GATE_SCRAPE_WAIT.toInteger(), unit: 'SECONDS')
+
+                    verifyErrorRatio()
+                    verifyLatencyP95()
+
+                    echo "Monitoring gate passed for ${env.RELEASE_TAG}."
+                }
+            }
+        }
     }
 
     post {
@@ -648,7 +703,7 @@ pipeline {
 
         success {
             echo "Deployed ${env.RELEASE_TAG} to ${env.RELEASE_ENV} (${env.TARGET_CLUSTER}/${env.RELEASE_NAMESPACE}); " +
-                'rollout, digest verification and smoke test all passed.'
+                'rollout, digest verification, smoke test and monitoring gate all passed.'
         }
 
         // Last, so diagnostics and rollback still have the recorded previous
@@ -985,6 +1040,228 @@ boolean recordedValuesMatch(List keys, Map live, Map recorded) {
 
 boolean runtimeMatchesRecordedState(Map recordedServices) {
     return servicesDifferingFrom(recordedServices).isEmpty()
+}
+
+// One instant query against the in-cluster Prometheus API, returned as its list
+// of series.
+//
+// Three outcomes are kept apart, because collapsing them would let a broken
+// monitoring system read as a healthy release. A transport failure, a non-200
+// response or a query the API rejects means Prometheus could not answer, and is
+// raised here. An empty list means the query ran and matched nothing, which is
+// the caller's to interpret.
+//
+// The query is passed through the environment rather than interpolated into the
+// command line, and curl encodes it, so no expression can end the command it
+// travels in.
+List promQuery(String description, String query) {
+    String httpStatus = ''
+
+    withEnv(["GATE_QUERY=${query}".toString()]) {
+        httpStatus = sh(
+            returnStdout: true,
+            script: '''
+                set -u
+                mkdir -p "$RENDER_DIR"
+                : > "$PROMETHEUS_RESULT"
+
+                code="$(curl -sS -o "$PROMETHEUS_RESULT" -w '%{http_code}' --max-time 15 \
+                    --data-urlencode "query=$GATE_QUERY" \
+                    "$PROMETHEUS_URL/api/v1/query")" || code=000
+
+                echo "$code"
+            ''',
+        ).trim()
+    }
+
+    if (httpStatus != '200') {
+        error("Monitoring gate: Prometheus answered the ${description} query with HTTP " +
+            "${httpStatus}. The release cannot be confirmed healthy while the monitoring " +
+            'system itself is unreachable. ' +
+            'Runbook: observability/runbooks/prometheus-target-down.md')
+    }
+
+    def payload = readJSON file: env.PROMETHEUS_RESULT
+
+    if (payload.status != 'success') {
+        String detail = payload.containsKey('error') ? payload.error : 'no detail given'
+        error("Monitoring gate: Prometheus rejected the ${description} query " +
+            "(status ${payload.status}): ${detail}")
+    }
+
+    return payload.data.result ?: []
+}
+
+// The value of a query written to return a single series, or null when there is
+// nothing to read: no matching series, or a value Prometheus could not compute.
+// A ratio over a window with no requests is 0/0, which comes back as NaN, and
+// histogram_quantile over an empty histogram does the same; neither is a
+// measurement, so neither can be compared against a threshold.
+Double promScalar(String description, String query) {
+    List series = promQuery(description, query)
+
+    if (!series) {
+        return null
+    }
+
+    if (series.size() != 1) {
+        error("Monitoring gate: the ${description} query returned ${series.size()} series; " +
+            'it is written to return one.')
+    }
+
+    String value = series[0].value[1].toString()
+    if (value in ['NaN', '+Inf', '-Inf']) {
+        return null
+    }
+
+    return value.toDouble()
+}
+
+// A service Prometheus cannot scrape is a service nothing is known about, so the
+// checks below would have no signal to judge the release on. Only the
+// application services are required here: Jenkins is monitored as its own
+// domain and its scrape health says nothing about this release.
+void verifyScrapeTargets() {
+    List services = env.SERVICES.split(' ').toList()
+
+    List series = promQuery(
+        'scrape target',
+        "up{namespace=\"${env.RELEASE_NAMESPACE}\", job=~\"${services.join('|')}\"}",
+    )
+
+    List down = []
+    Map targetsByService = [:]
+
+    for (sample in series) {
+        String job = sample.metric.job
+        String instance = sample.metric.instance
+        boolean isUp = sample.value[1].toString() == '1'
+
+        targetsByService[job] = (targetsByService[job] ?: 0) + 1
+        if (!isUp) {
+            down.add("${job} ${instance}")
+        }
+
+        echo "target ${job} ${instance} : ${isUp ? 'up' : 'DOWN'}"
+    }
+
+    // Prometheus not knowing a service at all and knowing it as unreachable are
+    // different faults, and only the second one has a target to name.
+    List undiscovered = []
+    for (service in services) {
+        if (!targetsByService[service]) {
+            undiscovered.add(service)
+        }
+    }
+
+    if (down || undiscovered) {
+        error('Monitoring gate: the application scrape targets are not healthy. ' +
+            (down ? "Down: ${down.join(', ')}. " : '') +
+            (undiscovered ? "No target discovered for: ${undiscovered.join(', ')}. " : '') +
+            'Runbook: observability/runbooks/prometheus-target-down.md')
+    }
+
+    for (service in services) {
+        echo "${service} : ${targetsByService[service]} scrape target(s) up"
+    }
+}
+
+// Real requests over the endpoint the smoke test already proved reachable. It is
+// a GET that renders the login form: it reads no user data, writes nothing and
+// needs no credential, and unlike the probe and scrape endpoints it is counted
+// by the request and latency metrics the gate reads back.
+void generateGateTraffic() {
+    sh '''
+        set -eu
+        url="$APP_BASE_URL$GATE_PATH"
+        sent=0
+        answered=0
+        unreachable=0
+
+        while [ "$sent" -lt "$GATE_REQUESTS" ]; do
+            status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url")" || status=000
+
+            if [ "$status" = "000" ]; then
+                sleep 1
+                status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url")" || status=000
+            fi
+
+            if [ "$status" = "000" ]; then
+                unreachable=$((unreachable + 1))
+            else
+                answered=$((answered + 1))
+            fi
+
+            sent=$((sent + 1))
+        done
+
+        echo "traffic $GATE_PATH : $sent sent, $answered answered, $unreachable unreachable"
+
+        # An error status is a real response and is judged by the metric checks.
+        # A request that never reached the application produces no metric at all,
+        # so it would leave the gate reading traffic it did not generate.
+        [ "$unreachable" -eq 0 ]
+    '''
+}
+
+// The HighErrorRate expression, scoped to the service this stage drove traffic
+// through. The numerator falls back to zero so that a service serving requests
+// with no 5xx reads as 0 rather than as an absence of data; the denominator does
+// not, so genuinely no traffic still reads as no data.
+void verifyErrorRatio() {
+    String selector = "namespace=\"${env.RELEASE_NAMESPACE}\", service=\"${env.GATE_SERVICE}\""
+
+    Double ratio = promScalar(
+        'error ratio',
+        "(sum(rate(taskflow_http_requests_total{${selector}, status=~\"5..\"}" +
+        "[${env.GATE_WINDOW}])) or vector(0))" +
+        " / sum(rate(taskflow_http_requests_total{${selector}}[${env.GATE_WINDOW}]))",
+    )
+
+    double threshold = env.GATE_MAX_ERROR_RATIO.toDouble()
+
+    if (ratio == null) {
+        echo "error ratio : no requests recorded for ${env.GATE_SERVICE} over " +
+            "${env.GATE_WINDOW}. There is nothing to measure, so this check does not " +
+            'fail the release.'
+        return
+    }
+
+    echo "error ratio : ${ratio} over ${env.GATE_WINDOW} (threshold ${threshold})"
+
+    if (ratio > threshold) {
+        error("Monitoring gate: the 5xx ratio for ${env.GATE_SERVICE} is ${ratio}, above the " +
+            "${threshold} the HighErrorRate alert holds it to. " +
+            'Runbook: observability/runbooks/high-error-rate.md')
+    }
+}
+
+// The HighLatencyP95 expression, over the same service and window.
+void verifyLatencyP95() {
+    String selector = "namespace=\"${env.RELEASE_NAMESPACE}\", service=\"${env.GATE_SERVICE}\""
+
+    Double latency = promScalar(
+        'p95 latency',
+        'histogram_quantile(0.95, sum by (le) (rate(' +
+        "taskflow_http_request_duration_seconds_bucket{${selector}}[${env.GATE_WINDOW}])))",
+    )
+
+    double threshold = env.GATE_MAX_LATENCY_P95.toDouble()
+
+    if (latency == null) {
+        echo "p95 latency : no requests recorded for ${env.GATE_SERVICE} over " +
+            "${env.GATE_WINDOW}. There is nothing to measure, so this check does not " +
+            'fail the release.'
+        return
+    }
+
+    echo "p95 latency : ${latency}s over ${env.GATE_WINDOW} (threshold ${threshold}s)"
+
+    if (latency > threshold) {
+        error("Monitoring gate: p95 latency for ${env.GATE_SERVICE} is ${latency}s, above the " +
+            "${threshold}s the HighLatencyP95 alert holds it to. " +
+            'Runbook: observability/runbooks/high-latency-p95.md')
+    }
 }
 
 // Never throws: diagnostics that cannot run must not replace the failure that
