@@ -65,9 +65,17 @@ grafana:
   persistence:
     enabled: false
 
+  # Both provisioning sources live in this namespace, so the sidecars do not need
+  # the chart's default cluster-wide read on ConfigMaps and Secrets.
+  rbac:
+    namespaced: true
+
   sidecar:
     dashboards:
       enabled: true
+      # The chart defaults this to ALL, which is what forces a ClusterRole.
+      # The datasource sidecar is already namespace-local by default.
+      searchNamespace: observability
     datasources:
       enabled: true
     resources:
@@ -110,6 +118,11 @@ kubeEtcd:
   enabled: false
 
 kube-state-metrics:
+  # kube_secret_* is not used by any dashboard or rule in this repository.
+  # Excluding the collector also drops the cluster-wide Secret read from its RBAC.
+  collectorsExclude:
+    - secrets
+
   nodeSelector:
     workload: jenkins
   tolerations:
