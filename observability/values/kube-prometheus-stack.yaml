@@ -233,6 +233,11 @@ prometheus:
             requests:
               storage: 10Gi
 
+    # Keep Prometheus history when the StatefulSet is removed or scaled.
+    persistentVolumeClaimRetentionPolicy:
+      whenDeleted: Retain
+      whenScaled: Retain
+
     # Discovery is scoped by namespace instead of by this release's labels.
     serviceMonitorSelectorNilUsesHelmValues: false
     serviceMonitorSelector: {}
