@@ -25,73 +25,73 @@ flowchart TB
 %% covered by the separate Deployment View diagram. The delivery stages around
 %% the monitoring gate are covered by the Pipeline Flow diagram.
 
-    subgraph EKS["<b><span style='font-size:22px'>Amazon EKS Cluster</span></b><br/>&nbsp;"]
+    subgraph EKS["<b>Amazon EKS Cluster</b>"]
     direction TB
 
         %% =========================================================
         %% APPLICATION
         %% =========================================================
 
-        subgraph APP["<b><span style='font-size:22px'>Application · namespace devops-app</span></b>"]
+        subgraph APP["<b>Application · namespace devops-app</b>"]
             direction TB
 
-            FE["<div style='text-align:center'><b>Frontend Pods</b></div><div style='text-align:left'>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics</div>"]
+            FE["<b>Frontend Pods</b><br/>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics"]
 
-            BE["<div style='text-align:center'><b>Backend Pods</b></div><div style='text-align:left'>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics</div>"]
+            BE["<b>Backend Pods</b><br/>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics"]
 
-            WK["<div style='text-align:center'><b>Worker Pods</b></div><div style='text-align:left'>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics</div>"]
+            WK["<b>Worker Pods</b><br/>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics"]
 
-            SMAPP["<div style='text-align:center'><b>ServiceMonitors</b></div><div style='text-align:left'>• One monitor per service<br/>• Port: http<br/>• Path: /metrics</div>"]
+            SMAPP["<b>ServiceMonitors</b><br/>• One monitor per service<br/>• Port: http<br/>• Path: /metrics"]
         end
 
         %% =========================================================
         %% DELIVERY
         %% =========================================================
 
-        subgraph JEN["<b><span style='font-size:22px'>Delivery · namespace jenkins</span></b>"]
+        subgraph JEN["<b>Delivery · namespace jenkins</b>"]
             direction TB
 
-            JCTRL["<div style='text-align:center'><b>Jenkins Controller</b></div><div style='text-align:left'>• Exposes build, queue, and executor metrics<br/>• Available at /prometheus/</div>"]
+            JCTRL["<b>Jenkins Controller</b><br/>• Exposes build, queue, and executor metrics<br/>• Available at /prometheus/"]
 
-            JMS["<div style='text-align:center'><b>jenkins-metrics Service</b></div><div style='text-align:left'>• ClusterIP service for controller metrics</div>"]
+            JMS["<b>jenkins-metrics Service</b><br/>• ClusterIP service for controller metrics"]
 
-            JSM["<div style='text-align:center'><b>ServiceMonitor jenkins-metrics</b></div><div style='text-align:left'>• Defines a /prometheus/ scrape every 60s</div>"]
+            JSM["<b>ServiceMonitor jenkins-metrics</b><br/>• Defines a /prometheus/ scrape every 60s"]
 
-            GATE["<div style='text-align:center'><b>CD Monitoring Gate</b></div><div style='text-align:left'>• Runs on the CD agent after smoke tests<br/>• Checks release health before the build passes</div>"]
+            GATE["<b>CD Monitoring Gate</b><br/>• Runs on the CD agent after smoke tests<br/>• Checks release health before the build passes"]
         end
 
         %% =========================================================
         %% KUBERNETES PLATFORM
         %% =========================================================
 
-        subgraph K8S["<b><span style='font-size:22px'>Kubernetes platform</span></b>"]
+        subgraph K8S["<b>Kubernetes platform</b>"]
             direction TB
 
-            KUBELET["<div style='text-align:center'><b>kubelet / cAdvisor</b></div><div style='text-align:left'>• Runs on every Kubernetes node<br/>• Exposes container CPU and memory usage<br/>• Provides container and Pod runtime metrics</div>"]
+            KUBELET["<b>kubelet / cAdvisor</b><br/>• Runs on every Kubernetes node<br/>• Exposes container CPU and memory usage<br/>• Provides container and Pod runtime metrics"]
         end
 
         %% =========================================================
         %% MONITORING STACK
         %% =========================================================
 
-        subgraph OBS["<b><span style='font-size:22px'>Monitoring · namespace observability</span></b>"]
+        subgraph OBS["<b>Monitoring · namespace observability</b>"]
             direction TB
 
-            KSM["<div style='text-align:center'><b>kube-state-metrics</b></div><div style='text-align:left'>• Exposes Kubernetes object state<br/>• Tracks desired and available replicas<br/>• Reports Deployment, Pod, and Node status</div>"]
+            KSM["<b>kube-state-metrics</b><br/>• Exposes Kubernetes object state<br/>• Tracks desired and available replicas<br/>• Reports Deployment, Pod, and Node status"]
 
-            NEX["<div style='text-align:center'><b>node-exporter</b></div><div style='text-align:left'>• Runs as a DaemonSet<br/>• One Pod on every node<br/>• Exposes CPU, memory, disk, and network metrics</div>"]
+            NEX["<b>node-exporter</b><br/>• Runs as a DaemonSet<br/>• One Pod on every node<br/>• Exposes CPU, memory, disk, and network metrics"]
 
-            PROM["<div style='text-align:center'><b>Prometheus</b></div><div style='text-align:left'>• Collects and stores metrics<br/>• Evaluates alert rules<br/>• Provides the query API</div>"]
+            PROM["<b>Prometheus</b><br/>• Collects and stores metrics<br/>• Evaluates alert rules<br/>• Provides the query API"]
 
-            PROMOP["<div style='text-align:center'><b>Prometheus Operator</b></div><div style='text-align:left'>• Reconciles ServiceMonitors and PrometheusRules<br/>• Configures Prometheus discovery and rules</div>"]
+            PROMOP["<b>Prometheus Operator</b><br/>• Reconciles ServiceMonitors and PrometheusRules<br/>• Configures Prometheus discovery and rules"]
 
-            RULES["<div style='text-align:center'><b>PrometheusRule</b></div><div style='text-align:left'>• Defines alert conditions<br/>• Error rate · p95 latency<br/>• Replica mismatch · node readiness<br/>• Jenkins queue · target availability</div>"]
+            RULES["<b>PrometheusRule</b><br/>• Defines alert conditions<br/>• Error rate · p95 latency<br/>• Replica mismatch · node readiness<br/>• Jenkins queue · target availability"]
 
-            AM["<div style='text-align:center'><b>Alertmanager</b></div><div style='text-align:left'>• Groups and routes alerts<br/>• Sends firing and resolved notifications</div>"]
+            AM["<b>Alertmanager</b><br/>• Groups and routes alerts<br/>• Sends firing and resolved notifications"]
 
-            GRAF["<div style='text-align:center'><b>Grafana</b></div><div style='text-align:left'>• Visualizes metrics in dashboards<br/>• Uses Prometheus as a datasource<br/>• Provisioned from code</div>"]
+            GRAF["<b>Grafana</b><br/>• Visualizes metrics in dashboards<br/>• Uses Prometheus as a datasource<br/>• Provisioned from code"]
 
-            PVC[("<div style='text-align:center'><b>Prometheus Storage</b></div><div style='text-align:left'>• PVC · 10 GiB · gp3<br/>• Stores Prometheus time series<br/>• Retention: 7 days / 6 GiB</div>")]
+            PVC[("<b>Prometheus Storage</b><br/>• PVC · 10 GiB · gp3<br/>• Stores Prometheus time series<br/>• Retention: 7 days / 6 GiB")]
         end
 
     end
@@ -100,11 +100,11 @@ flowchart TB
     %% NOTIFICATION AND ACCESS
     %% =========================================================
 
-    SNS["<div style='text-align:center'><b>Amazon SNS</b></div><div style='text-align:left'>• Receives alerts from Alertmanager<br/>• No static credentials</div>"]
+    SNS["<b>Amazon SNS</b><br/>• Receives alerts from Alertmanager<br/>• No static credentials"]
 
-    MAILBOX(["<div style='text-align:center'><b>Email Subscriber</b></div><div style='text-align:left'>• Receives firing and resolved alerts</div>"])
+    MAILBOX(["<b>Email Subscriber</b><br/>• Receives firing and resolved alerts"])
 
-    ACCESS["<div style='text-align:center'><b>Operator Access</b></div><div style='text-align:left'>• kubectl port-forward<br/>• Prometheus · Grafana · Alertmanager<br/>• No public ingress or public address</div>"]
+    ACCESS["<b>Operator Access</b><br/>• kubectl port-forward<br/>• Prometheus · Grafana · Alertmanager<br/>• No public ingress or public address"]
 
     %% =========================================================
     %% COLLECTION - RUNTIME METRIC FLOW

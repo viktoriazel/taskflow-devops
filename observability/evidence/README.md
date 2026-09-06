@@ -70,7 +70,7 @@ After recovery, all TaskFlow alert rules are inactive and monitoring has returne
 
 ## 🟣 12 — SNS Alert Notification
 
-Alertmanager successfully delivers the controlled alert notification through Amazon SNS to email.
+A temporary `SNSDeliveryTest` alert, fired to exercise the notification path on its own, reaches email through Amazon SNS — the same receiver, topic and Pod Identity role every project alert uses. This is evidence of the delivery path; `HighErrorRate` firing and resolving is evidence 09 and 11.
 
 ![SNS alert notification email](./12_sns_alert_notification.jpg)
 
@@ -92,17 +92,25 @@ Build rate and non-successful builds are shown together with Jenkins queue behav
 
 ![Jenkins delivery activity](./15_jenkins_delivery_activity.png)
 
-## 🟣 16 — Monitoring Gate Targets
+## 🟣 16 — Monitoring Gate Targets for the Current Release
 
-The post-deploy monitoring gate queries Prometheus and confirms healthy scrape targets for the Frontend, Backend, and Worker services.
+Application CD #25 Monitoring Gate verifies both current scrape targets for each of Backend, Frontend, and Worker as UP, while explicitly ignoring a stale Backend target that is not part of the current release.
 
-![Monitoring gate scrape targets](./16_cd_monitoring_targets_up.png)
+![Monitoring gate scrape targets for the current release](./16_cd_monitoring_targets_current_release.png)
 
 ## 🟣 17 — Monitoring Gate Passed
 
-The monitoring gate generates real application traffic, waits for the scrape, and validates error ratio and p95 latency against their thresholds before the release is declared healthy.
+### 17.1 — Metrics Verified against Thresholds
 
-![Monitoring gate passed](./17_cd_monitoring_gate_passed.png)
+Application CD #25 waits for fresh Prometheus samples, then verifies a 5-minute Frontend error ratio of 0.0 against the 0.05 threshold and p95 latency of 0.0095s against the 0.5s threshold.
+
+![Monitoring gate metrics verified against thresholds](./17_1_cd_monitoring_gate_metrics.png)
+
+### 17.2 — Deployment Completed Successfully
+
+Application CD #25 completes successfully after rollout, digest verification, smoke test, and the post-deploy Monitoring Gate all pass for release git-3e31f57ed7dd-b24-1788715918923.
+
+![Monitoring gate passed and deployment finished successfully](./17_2_cd_monitoring_gate_success.png)
 
 ## 🟣 18 — Kubernetes Replicas Mismatch
 

@@ -17,12 +17,12 @@ resources:
 images:
   - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-backend
     newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-backend
-    digest: sha256:b9135dc304bac6881738bdff05f7425fe3e873460ca33e110a76cddbd193db57
+    digest: sha256:748c87815e21430aa5d56729781d93fc2defe6f086bd96589b194dfd3fbcbfff
 
   - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-frontend
     newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-frontend
-    digest: sha256:70c322d07d63d3f6ce737c6bc434ff2259115f3eed314ca9c50d2d00d2e30775
+    digest: sha256:e34497ca07eba737fe7e1a58da399816fd92c58630484383df9264b4161bcd3e
 
   - name: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker
     newName: 034869165452.dkr.ecr.eu-north-1.amazonaws.com/taskflow-dev-worker
-    digest: sha256:f2b91ee3aace23291c433b8754975bf32c5b73ef037d01001daf7fb936c5d69e
+    digest: sha256:bb8202db2227d54935a6a28e5f0d44a92f68c884dace7378b3736f985cc5b425

@@ -18,9 +18,9 @@ spec:
   template:
     metadata:
       annotations:
-        taskflow.io/git-commit: "ed4f0f568558130b942f5a14785befceb8ded39e"
-        taskflow.io/ci-build: "manual"
-        taskflow.io/image-tag: "git-ed4f0f5"
+        taskflow.io/git-commit: "3e31f57ed7dd1c7b980cbad6825f5cf641942303"
+        taskflow.io/ci-build: "ci-application#24"
+        taskflow.io/image-tag: "git-3e31f57ed7dd-b24-1788715918923"
         taskflow.io/deployed-by: "manual-kubectl"
 ---
 apiVersion: apps/v1
@@ -34,9 +34,9 @@ spec:
   template:
     metadata:
       annotations:
-        taskflow.io/git-commit: "ed4f0f568558130b942f5a14785befceb8ded39e"
-        taskflow.io/ci-build: "manual"
-        taskflow.io/image-tag: "git-ed4f0f5"
+        taskflow.io/git-commit: "3e31f57ed7dd1c7b980cbad6825f5cf641942303"
+        taskflow.io/ci-build: "ci-application#24"
+        taskflow.io/image-tag: "git-3e31f57ed7dd-b24-1788715918923"
         taskflow.io/deployed-by: "manual-kubectl"
 ---
 apiVersion: apps/v1
@@ -50,7 +50,7 @@ spec:
   template:
     metadata:
       annotations:
-        taskflow.io/git-commit: "ed4f0f568558130b942f5a14785befceb8ded39e"
-        taskflow.io/ci-build: "manual"
-        taskflow.io/image-tag: "git-ed4f0f5-r2"
+        taskflow.io/git-commit: "3e31f57ed7dd1c7b980cbad6825f5cf641942303"
+        taskflow.io/ci-build: "ci-application#24"
+        taskflow.io/image-tag: "git-3e31f57ed7dd-b24-1788715918923"
         taskflow.io/deployed-by: "manual-kubectl"
