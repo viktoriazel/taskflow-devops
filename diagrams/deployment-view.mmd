@@ -1,9 +1,13 @@
+%%{init: {'themeVariables': {'fontSize': '18px'}, 'flowchart': {'wrappingWidth': 420, 'subGraphTitleMargin': {'top': 8, 'bottom': 20}, 'nodeSpacing': 30, 'rankSpacing': 80}}}%%
 flowchart TB
 
 %% TaskFlow - Deployment View
+%% Where every component runs, and how the deployed components relate.
+%% ---
 %% Reading the diagram:
-%%   the two sides of the platform are drawn next to each other: the
-%%     application side and the Jenkins side, each reading top to bottom
+%%   the sides of the platform are drawn next to each other: the application
+%%     side, the Jenkins side and the observability side, each reading top
+%%     to bottom
 %%   solid line  = runtime traffic or control action
 %%   dotted line = configuration or provisioning relationship
 %%   an Ingress is not a traffic hop: each ALB is created from the Ingress
@@ -19,97 +23,159 @@ flowchart TB
 %%   Route 53 and ACM are outside the customer VPC; both ALBs live inside
 %%     it, in the public subnets
 %%   subnet tiers are stated on the blocks that live in them
+%%   the observability side is drawn as a third side: it collects application,
+%%     Jenkins and cluster metrics, keeps its own time series on a PVC and
+%%     publishes nothing - no component of it has an ingress
+%%   a ServiceMonitor or a PrometheusRule carries no metrics: the Prometheus
+%%     Operator reconciles it into the Prometheus configuration, so those
+%%     objects point at the Operator and never straight at Prometheus
+%%   a scrape arrow here points from Prometheus to the target, in the direction
+%%     the scrape connection is opened; the Observability View draws the same
+%%     relationship in the direction the metrics travel
+%%   the monitoring Pods carry nodeSelector workload=jenkins and the matching
+%%     toleration, so they land on the Jenkins node group; node-exporter is
+%%     the exception and runs on every node
+%%   the webhook path is the only published Jenkins route: the Jenkins UI and
+%%     the whole monitoring stack are reached with kubectl port-forward
+%%   each SNS topic carries its own email subscription, so the two subscribers
+%%     are two subscription roles - one for application notifications, one for
+%%     alerts - not a claim about how many mailboxes they resolve to
+%% ---
 %%   build and scan tooling is detailed in the Pipeline Flow diagram
+%%   what the monitoring stack collects, and from where, is detailed in the
+%%     separate Observability View diagram
 
 %% ---------------------------------------------------------
 %% EXTERNAL ACTORS
 %% ---------------------------------------------------------
 
-USER["User<br/>browser"]
-GITHUB["GitHub<br/>repository · webhook"]
-OPERATOR["Operator<br/>kubectl"]
+USER["<div style='text-align:center'><b>User</b></div><div style='text-align:left'>• Browser over HTTPS</div>"]
 
-subgraph AWS["AWS · eu-north-1"]
+GITHUB["<div style='text-align:center'><b>GitHub</b></div><div style='text-align:left'>• Repository and webhook source</div>"]
+
+OPERATOR["<div style='text-align:center'><b>Operator</b></div><div style='text-align:left'>• Cluster access with kubectl</div>"]
+
+MAILAPP(["<div style='text-align:center'><b>Application Email Subscriber</b></div><div style='text-align:left'>• Receives TaskFlow notifications</div>"])
+
+MAILALERT(["<div style='text-align:center'><b>Alert Email Subscriber</b></div><div style='text-align:left'>• Receives firing and resolved alerts</div>"])
+
+subgraph AWS["<b><span style='font-size:26px'>AWS · eu-north-1</span></b><br/>&nbsp;"]
 
     %% -----------------------------------------------------
     %% PUBLIC ENTRY - DNS AND TLS, OUTSIDE THE CUSTOMER VPC
     %% -----------------------------------------------------
 
-    APPDNS["taskflow.plus<br/>Route 53 · ACM"]
+    APPDNS["<div style='text-align:center'><b>taskflow.plus</b></div><div style='text-align:left'>• Route 53 record · ACM certificate</div>"]
 
-    WHDNS["jenkins.taskflow.plus<br/>Route 53 · ACM"]
+    WHDNS["<div style='text-align:center'><b>jenkins.taskflow.plus</b></div><div style='text-align:left'>• Route 53 record · ACM certificate</div>"]
 
-    PF["Operator access<br/>kubectl port-forward<br/>Jenkins UI not public"]
+    PF["<div style='text-align:center'><b>Operator Access</b></div><div style='text-align:left'>• kubectl port-forward · no public address<br/>• Jenkins UI · Prometheus<br/>• Grafana · Alertmanager<br/>• No public ingress for any of them</div>"]
 
     %% -----------------------------------------------------
     %% CUSTOMER VPC
     %% -----------------------------------------------------
 
-    subgraph VPC["Customer VPC · 2 AZs"]
+    subgraph VPC["<b><span style='font-size:24px'>Customer VPC · 2 Availability Zones</span></b>"]
 
-        subgraph PUBSUB["Public subnets"]
+        subgraph PUBSUB["<b><span style='font-size:20px'>Public subnets</span></b>"]
 
-            APPALB["Application HTTPS ALB<br/>open to the internet"]
+            APPALB["<div style='text-align:center'><b>Application HTTPS ALB</b></div><div style='text-align:left'>• Open to the internet<br/>• Public /metrics answered with a fixed 404<br/>• Target type ip · reaches Pod IPs</div>"]
 
-            WHALB["Webhook HTTPS ALB<br/>/github-webhook/<br/>GitHub CIDRs only"]
-
-        end
-
-        subgraph APPSIDE["Application side"]
-        direction TB
-
-            subgraph APPNS["namespace: devops-app · logical boundary in the cluster"]
-            direction TB
-
-                subgraph APPPODS["workload Pods · Deployments"]
-
-                    FRONTEND["Frontend · 2 replicas<br/>SA taskflow-frontend<br/>no AWS role"]
-
-                    BACKEND["Backend · 2 replicas<br/>SA taskflow-backend<br/>Pod Identity → S3"]
-
-                    WORKER["Worker · 2 replicas<br/>SA taskflow-worker<br/>Pod Identity → SNS"]
-
-                end
-
-                APPRES["Namespace-scoped objects<br/>Ingress · ClusterIP Services<br/>ConfigMap · Secrets<br/>on no node"]
-
-            end
-
-            NGAPP["Application Node Group<br/>3 × t3.small<br/>private application subnets"]
-
-            subgraph APPDB["Private database subnets"]
-
-                RDS[("Amazon RDS PostgreSQL<br/>private · no internet")]
-
-            end
+            WHALB["<div style='text-align:center'><b>Webhook HTTPS ALB</b></div><div style='text-align:left'>• Publishes only /github-webhook/<br/>• Restricted to GitHub CIDRs<br/>• Target type ip · reaches Pod IPs</div>"]
 
         end
 
-        subgraph JENSIDE["Jenkins side"]
+        subgraph APPSIDE["<b><span style='font-size:22px'>Application side</span></b>"]
         direction TB
 
-            subgraph JENKINSNS["namespace: jenkins · logical boundary in the cluster"]
+            subgraph APPNS["<b><span style='font-size:20px'>namespace devops-app</span></b>"]
             direction TB
 
-                subgraph JENPODS["Controller and Agent Pods"]
+                subgraph APPPODS["<b><span style='font-size:18px'>Workload Pods · Deployments</span></b>"]
 
-                    CTRL["Jenkins Controller<br/>permanent Pod<br/>numExecutors = 0<br/>no application deploy<br/>permissions"]
+                    FRONTEND["<div style='text-align:center'><b>Frontend</b></div><div style='text-align:left'>• 2 replicas · Deployment<br/>• SA taskflow-frontend<br/>• No AWS role</div>"]
 
-                    CIAG["CI Agent · ephemeral<br/>SA jenkins-ci-agent<br/>Pod Identity → ECR push<br/>no Kubernetes deploy access"]
+                    BACKEND["<div style='text-align:center'><b>Backend</b></div><div style='text-align:left'>• 2 replicas · Deployment<br/>• SA taskflow-backend<br/>• Pod Identity → S3</div>"]
 
-                    CDAG["CD Agent · ephemeral<br/>SA jenkins-cd-agent<br/>limited deploy RBAC<br/>ECR metadata read-only"]
+                    WORKER["<div style='text-align:center'><b>Worker</b></div><div style='text-align:left'>• 2 replicas · Deployment<br/>• SA taskflow-worker<br/>• Pod Identity → application SNS</div>"]
 
                 end
 
-                JSVC["Jenkins Service · ClusterIP<br/>namespace-scoped object<br/>on no node"]
+                APPRES["<div style='text-align:center'><b>Namespace-scoped objects</b></div><div style='text-align:left'>• Ingress · ClusterIP Services<br/>• ConfigMap · Secrets<br/>• Scheduled onto no node</div>"]
 
-                JRES["Jenkins configuration<br/>JCasC · plugins<br/>Job DSL · Jobs as Code<br/>Kubernetes Secrets<br/>webhook Ingress<br/>on no node"]
-
-                JPVC["PVC · taskflow-gp3<br/>Jenkins home<br/>namespace-scoped object"]
+                SMAPP["<div style='text-align:center'><b>ServiceMonitors</b></div><div style='text-align:left'>• frontend · backend · worker<br/>• Port http · path /metrics<br/>• Scheduled onto no node</div>"]
 
             end
 
-            NGJEN["Jenkins Node Group<br/>1 × m7i-flex.large<br/>private application subnets<br/>taint workload=jenkins:NoSchedule"]
+            NGAPP["<div style='text-align:center'><b>Application Node Group</b></div><div style='text-align:left'>• 3 × t3.small<br/>• Private application subnets</div>"]
+
+            subgraph APPDB["<b><span style='font-size:18px'>Private database subnets</span></b>"]
+
+                RDS[("<div style='text-align:center'><b>Amazon RDS PostgreSQL</b></div><div style='text-align:left'>• Managed PostgreSQL instance<br/>• Private · no internet route</div>")]
+
+            end
+
+        end
+
+        subgraph JENSIDE["<b><span style='font-size:22px'>Jenkins side</span></b>"]
+        direction TB
+
+            subgraph JENKINSNS["<b><span style='font-size:20px'>namespace jenkins</span></b>"]
+            direction TB
+
+                subgraph JENPODS["<b><span style='font-size:18px'>Controller and Agent Pods</span></b>"]
+
+                    CTRL["<div style='text-align:center'><b>Jenkins Controller</b></div><div style='text-align:left'>• Permanent Pod · numExecutors 0<br/>• Schedules work onto agent Pods<br/>• No application deploy permissions</div>"]
+
+                    CIAG["<div style='text-align:center'><b>CI Agent</b></div><div style='text-align:left'>• Ephemeral Pod · SA jenkins-ci-agent<br/>• Pod Identity → ECR push<br/>• No Kubernetes deploy access</div>"]
+
+                    CDAG["<div style='text-align:center'><b>CD Agent</b></div><div style='text-align:left'>• Ephemeral Pod · SA jenkins-cd-agent<br/>• Limited deploy RBAC<br/>• ECR metadata read-only</div>"]
+
+                end
+
+                JSVC["<div style='text-align:center'><b>Jenkins Service</b></div><div style='text-align:left'>• ClusterIP · selects the Controller Pod<br/>• Scheduled onto no node</div>"]
+
+                JMSVC["<div style='text-align:center'><b>jenkins-metrics Service</b></div><div style='text-align:left'>• ClusterIP · controller metrics only<br/>• Scheduled onto no node</div>"]
+
+                JSMON["<div style='text-align:center'><b>ServiceMonitor jenkins-metrics</b></div><div style='text-align:left'>• Path /prometheus/ · interval 60s<br/>• Scheduled onto no node</div>"]
+
+                JRES["<div style='text-align:center'><b>Jenkins configuration</b></div><div style='text-align:left'>• JCasC · plugins · Job DSL<br/>• Kubernetes Secrets · webhook Ingress<br/>• Scheduled onto no node</div>"]
+
+                JPVC[("<div style='text-align:center'><b>Jenkins Home PVC</b></div><div style='text-align:left'>• StorageClass taskflow-gp3<br/>• Scheduled onto no node</div>")]
+
+            end
+
+            NGJEN["<div style='text-align:center'><b>Jenkins Node Group</b></div><div style='text-align:left'>• 1 × m7i-flex.large<br/>• Private application subnet · single AZ<br/>• Taint workload=jenkins:NoSchedule</div>"]
+
+        end
+
+        subgraph OBSSIDE["<b><span style='font-size:22px'>Observability side</span></b>"]
+        direction TB
+
+            subgraph OBSNS["<b><span style='font-size:20px'>namespace observability</span></b>"]
+            direction TB
+
+                subgraph OBSPODS["<b><span style='font-size:18px'>Monitoring Pods</span></b>"]
+
+                    PROM["<div style='text-align:center'><b>Prometheus</b></div><div style='text-align:left'>• Scrapes application, Jenkins and cluster<br/>• Evaluates the alert rules<br/>• Retention 7d / 6GiB</div>"]
+
+                    GRAF["<div style='text-align:center'><b>Grafana</b></div><div style='text-align:left'>• Dashboards provisioned from code<br/>• Prometheus datasource · no ingress</div>"]
+
+                    ALERTM["<div style='text-align:center'><b>Alertmanager</b></div><div style='text-align:left'>• Groups and routes alerts<br/>• SA alertmanager<br/>• Pod Identity → alerts SNS</div>"]
+
+                    KSM["<div style='text-align:center'><b>kube-state-metrics</b></div><div style='text-align:left'>• Exposes Kubernetes object state<br/>• Reads state from the control plane</div>"]
+
+                    PROMOP["<div style='text-align:center'><b>Prometheus Operator</b></div><div style='text-align:left'>• Reconciles ServiceMonitors and rules<br/>• Configures Prometheus discovery</div>"]
+
+                end
+
+                NODEEXP["<div style='text-align:center'><b>node-exporter</b></div><div style='text-align:left'>• DaemonSet · one Pod on every node<br/>• Exposes host metrics</div>"]
+
+                OBSRES["<div style='text-align:center'><b>Namespace-scoped objects</b></div><div style='text-align:left'>• PrometheusRule · ClusterIP Services<br/>• NetworkPolicies<br/>• Scheduled onto no node</div>"]
+
+                OBSPVC[("<div style='text-align:center'><b>Prometheus Storage PVC</b></div><div style='text-align:left'>• 10 GiB · StorageClass taskflow-gp3<br/>• Scheduled onto no node</div>")]
+
+            end
 
         end
 
@@ -119,21 +185,23 @@ subgraph AWS["AWS · eu-north-1"]
     %% CONTROL PLANE
     %% -----------------------------------------------------
 
-    KAPI["EKS Control Plane<br/>taskflow-dev-eks<br/>AWS-managed<br/>outside customer VPC"]
+    KAPI["<div style='text-align:center'><b>EKS Control Plane</b></div><div style='text-align:left'>• Cluster taskflow-dev-eks<br/>• AWS-managed · outside the VPC</div>"]
 
     %% -----------------------------------------------------
     %% AWS-MANAGED SERVICES OUTSIDE THE VPC
     %% -----------------------------------------------------
 
-    subgraph OUTSIDE["AWS managed services"]
+    subgraph OUTSIDE["<b><span style='font-size:22px'>AWS managed services</span></b>"]
 
-        ECR["Amazon ECR<br/>3 repositories<br/>immutable tags"]
+        ECR["<div style='text-align:center'><b>Amazon ECR</b></div><div style='text-align:left'>• 3 repositories · immutable tags</div>"]
 
-        EBS["Amazon EBS<br/>gp3 · Jenkins home"]
+        EBS["<div style='text-align:center'><b>Amazon EBS</b></div><div style='text-align:left'>• gp3 · Jenkins home<br/>• gp3 · Prometheus data</div>"]
 
-        S3["Amazon S3<br/>private uploads"]
+        S3["<div style='text-align:center'><b>Amazon S3</b></div><div style='text-align:left'>• Private uploads bucket</div>"]
 
-        SNS["Amazon SNS<br/>notifications"]
+        SNS["<div style='text-align:center'><b>Amazon SNS · application</b></div><div style='text-align:left'>• TaskFlow notifications</div>"]
+
+        SNSALERT["<div style='text-align:center'><b>Amazon SNS · alerts</b></div><div style='text-align:left'>• Topic taskflow-dev-alerts</div>"]
 
     end
 
@@ -151,25 +219,52 @@ GITHUB -->|"HTTPS webhook"| WHDNS
 WHDNS --> WHALB
 WHALB -->|"HTTP :8080 · to Pod IP"| CTRL
 
+%% ---------------------------------------------------------
+%% OPERATOR ACCESS - PRIVATE, NEVER PUBLISHED
+%% ---------------------------------------------------------
+
 OPERATOR --> PF
-PF -->|"to Controller Pod"| CTRL
+
+PF -->|"Jenkins UI"| CTRL
+PF -->|"Prometheus UI"| PROM
+PF -->|"Grafana UI"| GRAF
+PF -->|"Alertmanager UI"| ALERTM
 
 %% ---------------------------------------------------------
 %% SCHEDULING - ONLY PODS LAND ON NODES
 %% ---------------------------------------------------------
 
 APPPODS -. "Pods scheduled onto" .-> NGAPP
-JENPODS -. "Pods scheduled onto<br/>tolerate workload=jenkins" .-> NGJEN
+JENPODS -. "Pods scheduled onto<br/>nodeSelector workload=jenkins" .-> NGJEN
+OBSPODS -. "Pods scheduled onto<br/>nodeSelector workload=jenkins" .-> NGJEN
+NODEEXP -. "One Pod per node" .-> NGAPP
+NODEEXP -. "One Pod per node" .-> NGJEN
 
 %% ---------------------------------------------------------
 %% CONFIGURATION - AN INGRESS IS NOT A TRAFFIC HOP
 %% ---------------------------------------------------------
 
-APPALB -. "declared by Ingress" .-> APPRES
-WHALB -. "declared by Ingress" .-> JRES
+APPALB -. "Declared by Ingress" .-> APPRES
+WHALB -. "Declared by Ingress" .-> JRES
 
-JRES -. "configures" .-> CTRL
-JSVC -. "selects Controller Pod" .-> CTRL
+JRES -. "Configures" .-> CTRL
+JSVC -. "Selects the Controller Pod" .-> CTRL
+JMSVC -. "Selects the Controller Pod" .-> CTRL
+
+%% ---------------------------------------------------------
+%% CONFIGURATION - MONITORING OBJECTS ARE RECONCILED, NOT SCRAPED
+%% ServiceMonitors and PrometheusRules are declarative objects. The Operator
+%% reconciles them into the Prometheus configuration; they carry no metrics.
+%% ---------------------------------------------------------
+
+SMAPP -. "Selects ClusterIP Services" .-> APPRES
+JSMON -. "Selects the metrics Service" .-> JMSVC
+
+SMAPP -. "Reconciled by Operator" .-> PROMOP
+JSMON -. "Reconciled by Operator" .-> PROMOP
+OBSRES -. "PrometheusRule reconciled by Operator" .-> PROMOP
+
+PROMOP -. "Configures" .-> PROM
 
 %% ---------------------------------------------------------
 %% JENKINS CONTROL / AGENTS
@@ -198,18 +293,45 @@ BACKEND -->|"PostgreSQL"| RDS
 BACKEND -->|"PutObject"| S3
 
 WORKER -->|"Publish"| SNS
+SNS -->|"email notification"| MAILAPP
+
+%% ---------------------------------------------------------
+%% OBSERVABILITY - SCRAPE, ALERT, STORE
+%% ---------------------------------------------------------
+
+PROM -->|"scrapes /metrics"| APPPODS
+PROM -->|"scrapes /prometheus/"| CTRL
+PROM -->|"scrapes"| KSM
+PROM -->|"scrapes"| NODEEXP
+
+KSM -->|"reads object state"| KAPI
+
+GRAF -->|"PromQL queries"| PROM
+PROM -->|"fires alerts"| ALERTM
+ALERTM -->|"Publish · Pod Identity"| SNSALERT
+SNSALERT -->|"email notification"| MAILALERT
+
+CDAG -->|"monitoring gate query<br/>in-cluster Service only"| PROM
+
+PROM -. "Stores time series" .-> OBSPVC
+OBSPVC -.-> EBS
 
 %% ---------------------------------------------------------
 %% STYLES
-%% Same purple palette as the Pipeline Flow diagram:
+%% Same purple palette as the Observability View and Pipeline Flow diagrams:
 %%   actor  = outside the platform entirely
 %%   entry  = public entry point into the platform
 %%   work   = running workload Pods
 %%   note   = declared Kubernetes objects and access paths, not workloads
 %%   ctx    = AWS-managed Kubernetes control plane
 %%   ext    = AWS managed services outside the cluster
+%%   mail   = external notification recipient
 %%   nodegrp = EC2 capacity a namespace's Pods are scheduled onto
+%% Every edge is drawn at twice the default stroke width for readability;
+%% the dash pattern of the dotted configuration edges is unaffected.
 %% ---------------------------------------------------------
+
+linkStyle default stroke-width:4px,fill:none
 
 classDef actor  fill:#F3F4F6,stroke:#4B5563,stroke-width:2px,color:#111827
 classDef entry  fill:#DDD6FE,stroke:#7C3AED,stroke-width:2px,color:#1F2937
@@ -217,18 +339,23 @@ classDef work   fill:#EDE9FE,stroke:#6D28D9,stroke-width:2px,color:#1F2937
 classDef note   fill:#FFFFFF,stroke:#7C3AED,stroke-width:1px,color:#4C1D95
 classDef ctx    fill:#F5F3FF,stroke:#7C3AED,stroke-width:2px,color:#1F2937
 classDef ext    fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,color:#1F2937
+classDef mail   fill:#FCE7F3,stroke:#BE185D,stroke-width:2px,color:#1F2937
 classDef cloud  fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
 classDef vpcbox fill:#F5F3FF,stroke:#6D28D9,stroke-width:3px,color:#4C1D95
 classDef zone   fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
 classDef nodegrp fill:#F5F3FF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
 
 class USER,GITHUB,OPERATOR actor
+class MAILAPP,MAILALERT mail
 class APPDNS,WHDNS,APPALB,WHALB entry
 class FRONTEND,BACKEND,WORKER,CTRL,CIAG,CDAG work
+class PROM,GRAF,ALERTM,KSM,NODEEXP,PROMOP work
 class PF,APPRES,JSVC,JRES,JPVC note
+class SMAPP,JMSVC,JSMON,OBSRES,OBSPVC note
 class NGAPP,NGJEN nodegrp
 class KAPI ctx
-class RDS,ECR,EBS,S3,SNS ext
+class RDS,ECR,EBS,S3,SNS,SNSALERT ext
 class AWS cloud
 class VPC vpcbox
 class PUBSUB,APPSIDE,APPNS,APPPODS,APPDB,JENSIDE,JENKINSNS,JENPODS,OUTSIDE zone
+class OBSSIDE,OBSNS,OBSPODS zone

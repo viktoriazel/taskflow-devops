@@ -1,0 +1,184 @@
+%%{init: {'flowchart': {'wrappingWidth': 420, 'subGraphTitleMargin': {'top': 8, 'bottom': 20}, 'nodeSpacing': 90, 'rankSpacing': 135}}}%%
+flowchart TB
+
+%% TaskFlow - Observability View
+%% What is measured, who collects it, where it is stored, and how a problem
+%% reaches a human.
+%% ---
+%% Reading the diagram:
+%%   solid line  = runtime communication or data flow
+%%   dotted line = configuration, storage and operator access
+%%   Prometheus pulls: an arrow drawn from a target into Prometheus is the
+%%     metric flow, not the direction the connection is opened in
+%%   a ServiceMonitor carries no traffic: it is reconciled by the Prometheus
+%%     Operator, and Prometheus performs the actual scrape - without a
+%%     ServiceMonitor Prometheus collects nothing from that namespace
+%%   discovery is scoped by namespace: ServiceMonitor, PodMonitor and
+%%     PrometheusRule objects are adopted only from devops-app, jenkins and
+%%     observability, while the targets those objects select may live
+%%     elsewhere - the kubelet endpoints in kube-system are collected that way
+%%   the outer box is the EKS cluster: the three namespaces and the platform
+%%     components run inside it, while the SNS topic, the email subscriber and
+%%     the operator's port-forward are outside it
+%% ---
+%% Where these components run - VPC, subnets, node groups, node placement - is
+%% covered by the separate Deployment View diagram. The delivery stages around
+%% the monitoring gate are covered by the Pipeline Flow diagram.
+
+    subgraph EKS["<b><span style='font-size:22px'>Amazon EKS Cluster</span></b><br/>&nbsp;"]
+    direction TB
+
+        %% =========================================================
+        %% APPLICATION
+        %% =========================================================
+
+        subgraph APP["<b><span style='font-size:22px'>Application · namespace devops-app</span></b>"]
+            direction TB
+
+            FE["<div style='text-align:center'><b>Frontend Pods</b></div><div style='text-align:left'>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics</div>"]
+
+            BE["<div style='text-align:center'><b>Backend Pods</b></div><div style='text-align:left'>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics</div>"]
+
+            WK["<div style='text-align:center'><b>Worker Pods</b></div><div style='text-align:left'>• Expose request count and latency<br/>• Expose dependency failures<br/>• Expose release identity on /metrics</div>"]
+
+            SMAPP["<div style='text-align:center'><b>ServiceMonitors</b></div><div style='text-align:left'>• One monitor per service<br/>• Port: http<br/>• Path: /metrics</div>"]
+        end
+
+        %% =========================================================
+        %% DELIVERY
+        %% =========================================================
+
+        subgraph JEN["<b><span style='font-size:22px'>Delivery · namespace jenkins</span></b>"]
+            direction TB
+
+            JCTRL["<div style='text-align:center'><b>Jenkins Controller</b></div><div style='text-align:left'>• Exposes build, queue, and executor metrics<br/>• Available at /prometheus/</div>"]
+
+            JMS["<div style='text-align:center'><b>jenkins-metrics Service</b></div><div style='text-align:left'>• ClusterIP service for controller metrics</div>"]
+
+            JSM["<div style='text-align:center'><b>ServiceMonitor jenkins-metrics</b></div><div style='text-align:left'>• Defines a /prometheus/ scrape every 60s</div>"]
+
+            GATE["<div style='text-align:center'><b>CD Monitoring Gate</b></div><div style='text-align:left'>• Runs on the CD agent after smoke tests<br/>• Checks release health before the build passes</div>"]
+        end
+
+        %% =========================================================
+        %% KUBERNETES PLATFORM
+        %% =========================================================
+
+        subgraph K8S["<b><span style='font-size:22px'>Kubernetes platform</span></b>"]
+            direction TB
+
+            KUBELET["<div style='text-align:center'><b>kubelet / cAdvisor</b></div><div style='text-align:left'>• Runs on every Kubernetes node<br/>• Exposes container CPU and memory usage<br/>• Provides container and Pod runtime metrics</div>"]
+        end
+
+        %% =========================================================
+        %% MONITORING STACK
+        %% =========================================================
+
+        subgraph OBS["<b><span style='font-size:22px'>Monitoring · namespace observability</span></b>"]
+            direction TB
+
+            KSM["<div style='text-align:center'><b>kube-state-metrics</b></div><div style='text-align:left'>• Exposes Kubernetes object state<br/>• Tracks desired and available replicas<br/>• Reports Deployment, Pod, and Node status</div>"]
+
+            NEX["<div style='text-align:center'><b>node-exporter</b></div><div style='text-align:left'>• Runs as a DaemonSet<br/>• One Pod on every node<br/>• Exposes CPU, memory, disk, and network metrics</div>"]
+
+            PROM["<div style='text-align:center'><b>Prometheus</b></div><div style='text-align:left'>• Collects and stores metrics<br/>• Evaluates alert rules<br/>• Provides the query API</div>"]
+
+            PROMOP["<div style='text-align:center'><b>Prometheus Operator</b></div><div style='text-align:left'>• Reconciles ServiceMonitors and PrometheusRules<br/>• Configures Prometheus discovery and rules</div>"]
+
+            RULES["<div style='text-align:center'><b>PrometheusRule</b></div><div style='text-align:left'>• Defines alert conditions<br/>• Error rate · p95 latency<br/>• Replica mismatch · node readiness<br/>• Jenkins queue · target availability</div>"]
+
+            AM["<div style='text-align:center'><b>Alertmanager</b></div><div style='text-align:left'>• Groups and routes alerts<br/>• Sends firing and resolved notifications</div>"]
+
+            GRAF["<div style='text-align:center'><b>Grafana</b></div><div style='text-align:left'>• Visualizes metrics in dashboards<br/>• Uses Prometheus as a datasource<br/>• Provisioned from code</div>"]
+
+            PVC[("<div style='text-align:center'><b>Prometheus Storage</b></div><div style='text-align:left'>• PVC · 10 GiB · gp3<br/>• Stores Prometheus time series<br/>• Retention: 7 days / 6 GiB</div>")]
+        end
+
+    end
+
+    %% =========================================================
+    %% NOTIFICATION AND ACCESS
+    %% =========================================================
+
+    SNS["<div style='text-align:center'><b>Amazon SNS</b></div><div style='text-align:left'>• Receives alerts from Alertmanager<br/>• No static credentials</div>"]
+
+    MAILBOX(["<div style='text-align:center'><b>Email Subscriber</b></div><div style='text-align:left'>• Receives firing and resolved alerts</div>"])
+
+    ACCESS["<div style='text-align:center'><b>Operator Access</b></div><div style='text-align:left'>• kubectl port-forward<br/>• Prometheus · Grafana · Alertmanager<br/>• No public ingress or public address</div>"]
+
+    %% =========================================================
+    %% COLLECTION - RUNTIME METRIC FLOW
+    %% Prometheus scrapes each endpoint itself, so every metric source is
+    %% drawn straight into Prometheus. Nothing in between relays metrics.
+    %% =========================================================
+
+    FE -->|"/metrics"| PROM
+    BE -->|"/metrics"| PROM
+    WK -->|"/metrics"| PROM
+
+    JCTRL -->|"/prometheus/ metrics"| PROM
+
+    KSM -->|"object and workload state"| PROM
+    NEX -->|"host metrics"| PROM
+    KUBELET -->|"container resource usage"| PROM
+
+    %% =========================================================
+    %% CONFIGURATION - WHAT PROMETHEUS IS TOLD TO DO
+    %% ServiceMonitors and PrometheusRules are declarative objects. The
+    %% Operator reconciles them into the Prometheus configuration; they never
+    %% carry metrics themselves.
+    %% The jenkins-metrics Service is what the ServiceMonitor selects: it names
+    %% the endpoints Prometheus then scrapes on the Controller Pod, and carries
+    %% no metrics either.
+    %% =========================================================
+
+    JMS -. "Selects the Controller Pod" .-> JCTRL
+
+    SMAPP -. "Reconciled by Operator" .-> PROMOP
+    JSM -. "Reconciled by Operator" .-> PROMOP
+    RULES -. "Reconciled by Operator" .-> PROMOP
+    PROMOP -. "Configures" .-> PROM
+
+    %% =========================================================
+    %% STORAGE, ALERTING AND DELIVERY
+    %% =========================================================
+
+    PROM -. "Stores time series" .-> PVC
+
+    %% Grafana and the CD Monitoring Gate are both read-only clients of the
+    %% Prometheus query API, so both are drawn pointing at Prometheus. Alerts
+    %% travel the other way: Prometheus itself pushes them to Alertmanager.
+    GRAF -->|"PromQL queries"| PROM
+    PROM -->|"Alerts"| AM
+    AM -->|"Publishes alerts"| SNS
+    SNS -->|"Email delivery"| MAILBOX
+
+    GATE -->|"query on the in-cluster Service<br/>current scrape targets<br/>error ratio · p95 latency"| PROM
+
+    ACCESS -. "port-forward" .-> GRAF
+    ACCESS -. "port-forward" .-> PROM
+    ACCESS -. "port-forward" .-> AM
+
+    %% =========================================================
+    %% STYLES
+    %% Same purple palette as the Deployment View and Pipeline Flow diagrams.
+    %% Every edge is drawn at twice the default stroke width for readability;
+    %% the dash pattern of the dotted configuration edges is unaffected.
+    %% =========================================================
+
+    linkStyle default stroke-width:4px,fill:none
+
+    classDef step fill:#EDE9FE,stroke:#6D28D9,stroke-width:2px,color:#1F2937
+    classDef entry fill:#DDD6FE,stroke:#7C3AED,stroke-width:2px,color:#1F2937
+    classDef note fill:#FFFFFF,stroke:#7C3AED,stroke-width:1px,color:#4C1D95
+    classDef ext fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,color:#1F2937
+    classDef mail fill:#FCE7F3,stroke:#BE185D,stroke-width:2px,color:#1F2937
+    classDef zone fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+
+    class FE,BE,WK,JCTRL,KSM,NEX,KUBELET,PROMOP step
+    class PROM,GRAF,AM entry
+    class SMAPP,JSM,JMS,RULES,ACCESS note
+    class GATE step
+    class PVC,SNS ext
+    class MAILBOX mail
+    class APP,JEN,K8S,OBS,EKS zone

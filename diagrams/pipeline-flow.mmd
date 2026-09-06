@@ -1,171 +1,188 @@
-%%{init: {'flowchart': {'wrappingWidth': 240}}}%%
-flowchart LR
+%%{init: {'themeVariables': {'fontSize': '18px'}, 'flowchart': {'wrappingWidth': 420, 'subGraphTitleMargin': {'top': 8, 'bottom': 34}, 'nodeSpacing': 40, 'rankSpacing': 90}}}%%
+flowchart TB
 
 %% TaskFlow - Pipeline Flow
-%% What happens to a code change, in order, from a Git push to a running version.
-%% Stages are grouped into logical blocks. Inside every block the names are listed
-%% in the order the pipeline runs them.
+%% What happens to a code change, in order, from a Git push to a healthy release,
+%% and what happens when health validation rejects it.
 %% ---
-%% The diagram reads as one wide line from left to right:
-%%   trigger, then CI, then the hand-off, then CD, then the running release.
-%% Each grouped block is compact inside: CI and CD read top to bottom, the
-%% hand-off is a small stack of what CI leaves behind, and automatic rollback
-%% reads left to right in one low band on the right, under the running release.
-%% Blocks are linked block to block rather than box to box, which is what keeps
-%% each block laid out in its own direction.
+%% Reading the diagram:
+%%   the page reads top to bottom - trigger, CI, the hand-off, CD, the outcome -
+%%     and each group reads left to right in the order the pipeline runs its
+%%     stages
+%%   solid line  = normal progression or a successful transition
+%%   dotted line = failure, fallback or an exceptional branch
+%%   groups are linked group to group rather than box to box, which is what lets
+%%     every group keep its own internal direction
+%%   automatic rollback is drawn under the post-deploy part of CD, because that
+%%     is the only part of the pipeline whose failure can reach it
+%%   the invariant the whole pipeline is built around: CI builds once, scans that
+%%     artifact, preserves its digest, and CD deploys that exact digest without
+%%     ever rebuilding it
+%%   a release is only successful when the monitoring system agrees it is
+%%     healthy, so the monitoring gate is a release gate and not a report
 %% ---
 %% Where the components run - VPC, subnets, node groups, storage, application
-%% topology - is covered by the separate Deployment View diagram and is not
-%% repeated here.
-%% Solid lines are the successful path. Dashed lines are failure and recovery.
+%% topology - is covered by the separate Deployment View diagram. What the
+%% monitoring stack collects, and how an alert reaches a human, is covered by the
+%% separate Observability View diagram. Neither is repeated here.
 
     %% =========================================================
     %% TRIGGER
     %% =========================================================
 
-    subgraph TRIG["Trigger"]
-        direction TB
+    subgraph TRIG["<b><span style='font-size:22px'>Trigger</span></b>"]
+    direction LR
 
-        GH["GitHub repository<br/>a developer pushes a commit"]
+        GH["<div style='text-align:center'><b>GitHub Repository</b></div><div style='text-align:left'>• A developer pushes a commit</div>"]
 
-        WH["Signed HTTPS webhook<br/>HMAC SHA-256 on every delivery<br/>received by the Jenkins controller,<br/>which schedules the jobs and runs<br/>no build and no deploy work"]
+        WH["<div style='text-align:center'><b>Signed HTTPS Webhook</b></div><div style='text-align:left'>• HMAC SHA-256 on every delivery<br/>• Received by the Jenkins controller<br/>• The controller schedules the jobs and runs neither build nor deploy work</div>"]
 
         GH --> WH
     end
 
     %% =========================================================
-    %% CI
+    %% CI - VALIDATE, BUILD ONCE, SCAN, PUSH, VERIFY
     %% =========================================================
 
-    subgraph CISEC["CI · job ci-application"]
-        direction TB
+    subgraph CISEC["<b><span style='font-size:22px'>CI · ci-application</span></b><br/><span style='font-size:16px'>Ephemeral CI Agent Pod · SA jenkins-ci-agent · ECR image push and digest verification<br/>No Kubernetes credential and no deploy stage</span>"]
+    direction LR
 
-        CIINFO["ephemeral CI Agent Pod, created for<br/>this build and deleted with it<br/>SA jenkins-ci-agent · ECR push<br/>no Kubernetes deploy access<br/>no deploy stage in this pipeline"]
+        CI1["<div style='text-align:center'><b>Checkout · Repository Validation</b></div><div style='text-align:left'>• Commit, branch and build number recorded<br/>• Project layout, Dockerfiles pinned by digest, pinned tooling<br/>• Kustomize graph resolves · every manifest referenced · no floating image reference</div>"]
 
-        CI1["Checkout · Validation · Lint<br/>Tests · Tag<br/>commit SHA · branch · build number<br/>project structure, lint and unit tests<br/>must all pass<br/>one unique immutable tag for<br/>all three services<br/>the tag must not already exist<br/>in the registry<br/>latest is never produced"]
+        CI2["<div style='text-align:center'><b>Validation · Observability as Code</b></div><div style='text-align:left'>• ServiceMonitor and PodMonitor: label selector and scrape endpoint port<br/>• PrometheusRule: expression, severity, summary, description<br/>• Every alert names a runbook that resolves in the repository<br/>• Grafana dashboard JSON: title, uid, typed panels, loaded by its ConfigMap generator<br/>• Shape only: nothing is applied and no monitoring is deployed</div>"]
 
-        CI2["Build · Scan<br/>rootless build, one OCI artifact<br/>per service<br/>built exactly once and never<br/>rebuilt afterwards<br/>the scanner reads those exact<br/>artifacts<br/>a fixable HIGH or CRITICAL finding<br/>stops the build<br/>any secret found in an image<br/>stops the build"]
+        CI3["<div style='text-align:center'><b>Lint · Tests · Tag</b></div><div style='text-align:left'>• Lint and unit tests must pass for all three services<br/>• One immutable tag for the whole run<br/>• The tag must not already exist in the registry<br/>• latest is never produced</div>"]
 
-        CI3["Push · Verify Digest<br/>the scanned artifacts are copied<br/>to Amazon ECR<br/>digests preserved, nothing is<br/>re-encoded or rebuilt<br/>the stored digest is then read<br/>back from the registry<br/>D_build == D_ecr for all<br/>three images<br/>a mismatch fails the build"]
+        CI4["<div style='text-align:center'><b>Build · Scan</b></div><div style='text-align:left'>• Rootless build · one OCI artifact per service<br/>• Built exactly once and never rebuilt afterwards<br/>• The scanner reads those exact artifacts<br/>• A fixable HIGH or CRITICAL finding stops the build<br/>• Any secret found in an image stops the build</div>"]
 
-        CI4["Publish Metadata<br/>image-manifest.json is written<br/>Git commit · CI build number<br/>image tag<br/>verified digest for each of the<br/>three services"]
+        CI5["<div style='text-align:center'><b>Push · Verify Digest</b></div><div style='text-align:left'>• The scanned artifacts are copied to Amazon ECR<br/>• Digests preserved · nothing is re-encoded or rebuilt<br/>• The stored digest is read back from the registry<br/>• The built and registry digests must match for all three images</div>"]
 
-        CIINFO ~~~ CI1
-        CI1 --> CI2
-        CI2 --> CI3
-        CI3 --> CI4
+        CI6["<div style='text-align:center'><b>Publish Metadata</b></div><div style='text-align:left'>• image-manifest.json is written<br/>• Git commit · CI build number · image tag<br/>• Verified digest for each of the three services</div>"]
+
+        CI1 --> CI2 --> CI3 --> CI4 --> CI5 --> CI6
     end
 
-    CIFAIL(["CI failed<br/>the pipeline stops here<br/>no image is promoted and<br/>application-cd is not started"])
+    CIFAIL(["<div style='text-align:center'><b>CI Failed</b></div><div style='text-align:left'>• The pipeline stops here<br/>• No release is promoted to CD<br/>• application-cd is not started</div>"])
 
     %% =========================================================
     %% HAND-OFF
     %% =========================================================
 
-    subgraph HAND["Artifact and registry hand-off"]
-        direction LR
+    %% No edge runs between the three boxes below: they are what CI leaves
+    %% behind, not a sequence. Unconnected boxes share one rank, and TB places a
+    %% rank side by side, which is what keeps this group a row rather than a
+    %% column.
+    subgraph HAND["<b><span style='font-size:22px'>Artifact Hand-off</span></b>"]
+    direction TB
 
-        MANIFEST["image-manifest.json<br/>archived and fingerprinted<br/>Jenkins artifact<br/>the only place CD reads<br/>digests from"]
+        MANIFEST["<div style='text-align:center'><b>image-manifest.json</b></div><div style='text-align:left'>• Archived and fingerprinted Jenkins artifact<br/>• The only place CD reads digests from</div>"]
 
-        ECR[("Amazon ECR<br/>three repositories<br/>immutable tags<br/>the exact image digests<br/>CI verified")]
+        ECR[("<div style='text-align:center'><b>Amazon ECR</b></div><div style='text-align:left'>• Three repositories · immutable tags<br/>• The exact image digests CI verified</div>")]
 
-        PROMO["CI post success starts<br/>application-cd<br/>promotion branch only<br/>parameters: IMAGE_TAG<br/>CI_BUILD_NUMBER · ENVIRONMENT<br/>RELEASE_NOTE<br/>no rebuild: the artifact tested<br/>by CI is the artifact deployed<br/>by CD"]
+        PROMO["<div style='text-align:center'><b>Promotion on CI Success</b></div><div style='text-align:left'>• Starts application-cd · promotion branch only<br/>• IMAGE_TAG · CI_BUILD_NUMBER · ENVIRONMENT · RELEASE_NOTE<br/>• No rebuild: the artifact CI built, scanned and verified is the artifact CD deploys</div>"]
     end
 
     %% =========================================================
-    %% CD
+    %% CD - VERIFY, RECORD, DEPLOY, PROVE HEALTHY
     %% =========================================================
 
-    subgraph CDSEC["CD · job application-cd"]
-        direction TB
+    subgraph CDSEC["<b><span style='font-size:22px'>CD · application-cd</span></b><br/><span style='font-size:16px'>Ephemeral CD Agent Pod · SA jenkins-cd-agent · limited deploy RBAC<br/>ECR read-only · no build stage and no image push</span>"]
+    direction LR
 
-        CDINFO["ephemeral CD Agent Pod, created for<br/>this deployment and deleted with it<br/>SA jenkins-cd-agent · limited deploy RBAC<br/>ECR read-only<br/>no build stage and no image push"]
+        CD1["<div style='text-align:center'><b>Prepare</b></div><div style='text-align:left'>• Checkout · Validate Parameters · Authenticate · Fetch CI Metadata<br/>• An empty, malformed or latest tag is rejected<br/>• The target namespace comes from an allow list<br/>• In-cluster ServiceAccount, deploy rights confirmed before any work<br/>• image-manifest.json is copied from that specific CI build</div>"]
 
-        CD1["Prepare<br/>Checkout · Validate Parameters<br/>Authenticate · Fetch CI Metadata<br/>the deployment manifests are<br/>checked out<br/>an empty, malformed or latest tag<br/>is rejected<br/>the target namespace comes from<br/>an allow list<br/>in-cluster ServiceAccount, deploy<br/>rights confirmed before any work<br/>copyArtifacts brings<br/>image-manifest.json from that<br/>specific CI build"]
+        CD2["<div style='text-align:center'><b>Verify</b></div><div style='text-align:left'>• Verify Provenance · Verify Registry<br/>• The manifest must describe that CI job, build and tag<br/>• Repository names are owned by this pipeline, never read from the artifact<br/>• Each digest must exist in Amazon ECR and still carry that tag<br/>• Read-only lookup: nothing is built and nothing is pushed</div>"]
 
-        CD2["Verify<br/>Verify Provenance · Verify Registry<br/>the manifest must describe that<br/>CI job, that build and that tag<br/>repository names are owned by this<br/>pipeline, not read from the artifact<br/>each digest must exist in Amazon ECR<br/>and still carry that tag<br/>read-only lookup: nothing is built<br/>and nothing is pushed"]
+        CD3["<div style='text-align:center'><b>Render and Plan</b></div><div style='text-align:left'>• Render Release · Validate Manifests · Release Plan · Capture Previous State<br/>• The release overlay is pinned to those exact verified digests<br/>• Server-side dry run over the release scope<br/>• The full release plan is printed before anything changes<br/>• The release running now is recorded first: digests, provenance annotations and release identity</div>"]
 
-        CD3["Render and Plan<br/>Render Release · Validate Manifests<br/>Release Plan · Capture Previous State<br/>the release overlay is pinned to<br/>those exact verified digests<br/>server-side dry run over the<br/>release scope<br/>the full release plan is printed<br/>before anything changes<br/>the digests running now are recorded<br/>first, as the state to return to"]
+        CD4["<div style='text-align:center'><b>Deploy · Rollout · Verify Release · Smoke Test</b></div><div style='text-align:left'>• Applied to namespace devops-app<br/>• Waits until every Deployment has rolled out<br/>• Running Pod digests, provenance annotations and release identity compared with the verified release<br/>• The smoke test runs over the public endpoint, after that runtime verification</div>"]
 
-        CD4["Deploy<br/>Deploy · Rollout · Verify Release<br/>Smoke Test<br/>applied to namespace devops-app<br/>waits until every Deployment<br/>has rolled out<br/>the running Pod digests are compared<br/>with the verified digests<br/>the smoke test runs last,<br/>after that verification"]
+        CD5["<div style='text-align:center'><b>Monitoring Gate · Current Targets</b></div><div style='text-align:left'>• Baseline: 20 requests to /login on each current frontend Pod, so every measured series already exists<br/>• Waits 40s, one full scrape interval plus margin, before reading anything<br/>• Kubernetes names the expected targets: the Running and Ready Pods of this rollout, matched by Pod name and address<br/>• A required Pod with no target, or a target that is DOWN, fails the gate and names its runbook<br/>• Targets left behind by a replaced Pod are reported and ignored</div>"]
 
-        CDINFO ~~~ CD1
-        CD1 --> CD2
-        CD2 --> CD3
-        CD3 --> CD4
+        CD6["<div style='text-align:center'><b>Monitoring Gate · Release Signal</b></div><div style='text-align:left'>• 30 requests over the public endpoint, then 75s for them to be scraped<br/>• 5xx ratio for the frontend service over 5m must stay at or below 0.05<br/>• p95 latency for the frontend service over 5m must stay at or below 0.5s<br/>• The alert rules' own window and thresholds, evaluated once instead of over their for-duration<br/>• A bad value fails the release and names its runbook; too little data to measure does not<br/>• Queries are read-only: no deploy and no configuration change, only safe probe traffic</div>"]
+
+        CD1 --> CD2 --> CD3 --> CD4 --> CD5 --> CD6
     end
 
-    CDPRE(["Failed before Deploy<br/>the environment is unchanged<br/>no rollback is required"])
+    MON["<div style='text-align:center'><b>Prometheus</b></div><div style='text-align:left'>• Queried on its in-cluster Service<br/>• Current scrape targets<br/>• 5xx ratio · p95 latency<br/>• Answers queries only: the gate writes nothing</div>"]
 
-    OK(["Running TaskFlow<br/>the exact image digests CI built,<br/>scanned and verified<br/>runtime digests confirmed<br/>after the rollout"])
+    CDPRE(["<div style='text-align:center'><b>Failed before Deploy</b></div><div style='text-align:left'>• Prepare, Verify, or Render and Plan failed<br/>• The environment is unchanged<br/>• No rollback is required</div>"])
 
-    LEG["Legend<br/>CI builds once. CD never rebuilds an image.<br/>The exact digest is preserved end to end.<br/>A release that fails after Deploy triggers<br/>an automatic rollback."]
+    OK(["<div style='text-align:center'><b>Healthy Release</b></div><div style='text-align:left'>• The exact image digests CI built, scanned and verified<br/>• Runtime digests and release identity confirmed after the rollout<br/>• Monitoring gate passed: the release is healthy in the monitoring system too</div>"])
 
     %% =========================================================
-    %% AUTOMATIC ROLLBACK - ONE LOW BAND UNDER THE RUNNING RELEASE
+    %% AUTOMATIC ROLLBACK - UNDER THE POST-DEPLOY PART OF CD
     %% =========================================================
 
-    subgraph RBK["Automatic rollback · runs when a release fails after it was applied"]
-        direction LR
+    subgraph RBK["<b><span style='font-size:22px'>Automatic Rollback</span></b><br/><span style='font-size:16px'>Runs when a release fails after it was applied</span>"]
+    direction LR
 
-        RB1["Collect diagnostics · Drift check<br/>Deployments, events and logs<br/>of unhealthy Pods collected first,<br/>before anything is changed back<br/>the declared Pod template and<br/>every running Pod compared with<br/>the recorded previous state"]
+        PREV["<div style='text-align:center'><b>previous-images.json</b></div><div style='text-align:left'>• Recorded digests and provenance annotations<br/>• Release identity: APP_VERSION · GIT_COMMIT · RELEASE_REF<br/>• Archived with the build · read by the fallback</div>"]
 
-        RB2["Primary · kubectl rollout undo<br/>on the drifted Deployments only,<br/>then wait for the rollout<br/>the restored runtime state<br/>is verified"]
+        RB1["<div style='text-align:center'><b>Collect Diagnostics · Drift Check</b></div><div style='text-align:left'>• Deployments, events and logs of unhealthy Pods collected first, before anything is changed back<br/>• The declared Pod template and every running Pod compared with the recorded previous release</div>"]
 
-        RB3["Fallback · reapply the recorded<br/>previous digests and their<br/>provenance annotations from<br/>previous-images.json,<br/>then wait for the rollout<br/>the restored runtime state<br/>is verified again"]
+        RB2["<div style='text-align:center'><b>Primary · kubectl rollout undo</b></div><div style='text-align:left'>• Runs on the drifted Deployments only, then waits for the rollout<br/>• The restored runtime state is verified against the recording</div>"]
 
-        PREV["previous-images.json<br/>recorded digests and provenance<br/>archived with the build<br/>read by the rollback fallback"]
+        RB3["<div style='text-align:center'><b>Fallback · Reapply the Recorded Release</b></div><div style='text-align:left'>• Recorded digests, provenance annotations and release identity reapplied together<br/>• Waits for the rollout, then verifies the restored runtime state again</div>"]
 
-        RBNOT["Rollback not needed<br/>nothing was changed<br/>every Deployment still matches<br/>the recorded state"]
+        RBNOT["<div style='text-align:center'><b>Rollback Not Needed</b></div><div style='text-align:left'>• Nothing was changed<br/>• Every Deployment still matches the recorded release<br/>• Build remains FAILED</div>"]
 
-        RESTORED(["Previous known state restored<br/>the build stays FAILED:<br/>the release did not deploy"])
+        RESTORED(["<div style='text-align:center'><b>Previous Healthy Release Restored</b></div><div style='text-align:left'>• Image, provenance and release identity restored together<br/>• Build remains FAILED<br/>• The release did not succeed</div>"])
 
-        RBFAIL(["ROLLBACK FAILED<br/>the environment needs manual<br/>attention<br/>the recorded previous state<br/>stays archived with the build"])
+        RBFAIL(["<div style='text-align:center'><b>Rollback Failed</b></div><div style='text-align:left'>• The environment needs manual attention<br/>• The recorded previous release stays archived with the build</div>"])
 
         RB1 -.->|"no drift"| RBNOT
         RB1 -->|"drifted Deployments"| RB2
         RB2 -->|"state restored"| RESTORED
-        RB2 -.->|"undo failed or<br/>state not restored"| RB3
-        PREV -.-> RB3
+        RB2 -.->|"undo failed or state not restored"| RB3
+        PREV -.->|"recorded release"| RB3
         RB3 -->|"state restored"| RESTORED
-        RB3 -.-> RBFAIL
+        RB3 -.->|"still not restored"| RBFAIL
     end
 
     %% =========================================================
-    %% BLOCK TO BLOCK
+    %% GROUP TO GROUP
     %% =========================================================
 
     TRIG -->|"starts ci-application"| CISEC
-    CISEC -->|"images pushed and digests<br/>read back · image-manifest.json<br/>archived"| HAND
-    HAND -->|"promotion: the artifact tested<br/>by CI is the artifact deployed"| CDSEC
-    CDSEC --> OK
+    CISEC -->|"images pushed · digests read back<br/>image-manifest.json archived"| HAND
+    HAND -->|"promotion: the artifact CI built, scanned<br/>and verified is the artifact CD deploys"| CDSEC
+    CDSEC -->|"the Monitoring Gate reads<br/>the current signal"| MON
+    CDSEC -->|"monitoring gate passed"| OK
 
     CISEC -.->|"a CI gate fails"| CIFAIL
-    CDSEC -.->|"failure in Prepare, Verify or<br/>Render and Plan"| CDPRE
-    CDSEC -.->|"release failed in Deploy, Rollout,<br/>Verify Release or Smoke Test"| RBK
-
-    CDSEC ~~~ LEG
+    CDSEC -.->|"failure before the release is applied"| CDPRE
+    CDSEC -.->|"failure in Deploy, Rollout, Verify Release,<br/>Smoke Test or the Monitoring Gate"| RBK
 
     %% =========================================================
     %% STYLES
+    %% Same purple palette as the Deployment View and Observability View
+    %% diagrams. States are told apart by family rather than by a second hue:
+    %%   lavender  = the successful path and its outcome
+    %%   soft pink = an outcome that needs attention
+    %%   white     = a recorded artifact or a neutral outcome
+    %% Every edge is drawn at twice the default stroke width for readability;
+    %% the dash pattern of the dotted failure edges is unaffected.
     %% =========================================================
 
-    classDef entry fill:#DDD6FE,stroke:#7C3AED,stroke-width:2px,color:#1F2937
-    classDef step fill:#EDE9FE,stroke:#6D28D9,stroke-width:2px,color:#1F2937
-    classDef ext fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,color:#1F2937
-    classDef good fill:#D1FAE5,stroke:#047857,stroke-width:2px,color:#1F2937
-    classDef fail fill:#FEF3C7,stroke:#B45309,stroke-width:2px,color:#1F2937
-    classDef zone fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
-    classDef legend fill:#FFFFFF,stroke:#9CA3AF,stroke-width:1px,color:#374151
-    classDef note fill:#FFFFFF,stroke:#7C3AED,stroke-width:1px,color:#4C1D95
+    linkStyle default stroke-width:4px,fill:none
 
+    classDef actor fill:#F3F4F6,stroke:#4B5563,stroke-width:2px,color:#111827
+    classDef entry fill:#DDD6FE,stroke:#7C3AED,stroke-width:2px,color:#1F2937
+    classDef step  fill:#EDE9FE,stroke:#6D28D9,stroke-width:2px,color:#1F2937
+    classDef note  fill:#FFFFFF,stroke:#7C3AED,stroke-width:1px,color:#4C1D95
+    classDef ext   fill:#F3F4F6,stroke:#6B7280,stroke-width:1px,color:#1F2937
+    classDef good  fill:#DDD6FE,stroke:#4C1D95,stroke-width:3px,color:#1F2937
+    classDef stop  fill:#FCE7F3,stroke:#BE185D,stroke-width:2px,color:#1F2937
+    classDef zone  fill:#FDFCFF,stroke:#4C1D95,stroke-width:2px,color:#3B0764
+
+    class GH actor
     class WH,PROMO entry
-    class CI1,CI2,CI3,CI4 step
-    class CD1,CD2,CD3,CD4 step
+    class CI1,CI2,CI3,CI4,CI5,CI6 step
+    class CD1,CD2,CD3,CD4,CD5,CD6 step
     class RB1,RB2,RB3 step
-    class GH,ECR,MANIFEST,PREV ext
-    class CIINFO,CDINFO note
+    class MANIFEST,PREV,RBNOT note
+    class ECR,MON ext
     class OK,RESTORED good
-    class CIFAIL,CDPRE,RBNOT,RBFAIL fail
+    class CIFAIL,CDPRE,RBFAIL stop
     class TRIG,CISEC,HAND,CDSEC,RBK zone
-    class LEG legend
