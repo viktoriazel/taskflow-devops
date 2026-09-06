@@ -13,6 +13,12 @@ APP_INFO = "taskflow_app_info"
 
 EXCLUDED_PATHS = ["/metrics", "/health", "/live", "/ready"]
 
+# Spellings of /metrics that the load balancer rule does not match. Werkzeug
+# strips the leading slashes, so both reach the metrics rule. A public
+# /%2Fmetrics arrives as the first of them - the server decodes %2F before
+# WSGI - so PATH_INFO, which is already decoded, needs no entry of its own.
+BYPASS_PATHS = ["//metrics", "///metrics"]
+
 FILE_PATH = "/files/uploads/todo-1/report.pdf"
 
 
@@ -36,6 +42,7 @@ class RefusingBackend:
 
 
 def test_metrics_endpoint_serves_prometheus_text(client):
+    """A scrape of the Pod carries no X-Forwarded-For and reads the metrics."""
     response = client.get("/metrics")
 
     assert response.status_code == 200
@@ -45,6 +52,37 @@ def test_metrics_endpoint_serves_prometheus_text(client):
     assert "# TYPE taskflow_http_requests_total counter" in body
     assert "# TYPE taskflow_http_request_duration_seconds histogram" in body
     assert "# TYPE taskflow_app_info gauge" in body
+
+
+def test_metrics_denied_for_proxied_request(client):
+    response = client.get("/metrics", headers={"X-Forwarded-For": "203.0.113.7"})
+
+    assert response.status_code == 404
+    assert "taskflow_" not in response.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("path", BYPASS_PATHS)
+def test_metrics_denied_for_slash_bypass_paths(client, path):
+    """Leading slashes let a path past the load balancer rule, not past this.
+
+    PATH_INFO is set on the environ directly: client.get("//metrics") would
+    read the path as a scheme-relative URL and never reach the rule, so the
+    test would pass without exercising the guard at all.
+    """
+    response = client.get(
+        "/",
+        environ_overrides={"PATH_INFO": path},
+        headers={"X-Forwarded-For": "203.0.113.7"},
+    )
+
+    assert response.status_code == 404
+    assert "taskflow_" not in response.get_data(as_text=True)
+
+    # The same path unproxied still serves metrics, so the 404 above is the
+    # guard refusing the request, not the path missing the rule.
+    direct = client.get("/", environ_overrides={"PATH_INFO": path})
+    assert direct.status_code == 200
+    assert "taskflow_" in direct.get_data(as_text=True)
 
 
 def test_request_counter_counts_the_request(client):

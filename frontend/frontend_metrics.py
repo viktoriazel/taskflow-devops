@@ -3,7 +3,7 @@
 import os
 import time
 
-from flask import g, request
+from flask import abort, g, request
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
@@ -112,7 +112,17 @@ def _record_request(response):
 
 
 def _serve_metrics():
-    """Expose this service's metrics in the Prometheus text format."""
+    """Expose this service's metrics in the Prometheus text format.
+
+    Only a direct in-cluster scrape may read them. The load balancer blocks
+    /metrics itself, but not every path variant that reaches this rule anyway:
+    Werkzeug strips leading slashes, so //metrics and /%2Fmetrics arrive here.
+    Proxied traffic always carries X-Forwarded-For, a scrape of the Pod never
+    does, which closes those variants without a rule per spelling.
+    """
+    if "X-Forwarded-For" in request.headers:
+        abort(404)
+
     return generate_latest(METRICS_REGISTRY), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
 
